@@ -1,6 +1,8 @@
 import os
 import asyncio
 import logging
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -80,10 +82,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.error(f"Error communicating with Gemini: {e}")
         await update.message.reply_text("Sorry, I encountered an error while processing your request.")
 
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b'Bot is running!')
+
+def run_dummy_server():
+    port = int(os.environ.get('PORT', 8080))
+    server_address = ('0.0.0.0', port)
+    httpd = HTTPServer(server_address, DummyHandler)
+    httpd.serve_forever()
+
 def main() -> None:
     if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
         logger.error("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY in environment variables.")
         return
+
+    # Start a dummy web server on a separate thread to satisfy Render's port binding requirement
+    threading.Thread(target=run_dummy_server, daemon=True).start()
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
