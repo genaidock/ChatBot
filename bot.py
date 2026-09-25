@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.5-flash") # Use flash for quick chat responses
+model = genai.GenerativeModel("gemini-3.8-flash") # Use flash for quick chat responses
 
 # Initialize a chat session dictionary to keep context per user
 user_chats = {}
