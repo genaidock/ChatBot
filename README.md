@@ -36,5 +36,6 @@ Render is a great free option to host this bot.
    - Environment: `Python 3`
    - Build Command: `pip install -r requirements.txt`
    - Start Command: `python bot.py`
-6. Go to "Environment" variables on Render and add the three variables from your `.env` file.
+6. Go to "Environment" variables on Render and add the variables from your `.env` file.
+   - **Crucial Step:** Add `WEBHOOK_URL` and set it to your app's public Render URL (e.g., `https://your-app-name.onrender.com`). This tells the bot to use Webhooks instead of long-polling, which allows Telegram to wake up your bot instantly when you send a message!
 7. Deploy!

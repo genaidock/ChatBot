@@ -1,8 +1,6 @@
 import os
 import asyncio
 import logging
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -14,6 +12,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") # e.g. https://your-app-name.onrender.com
 
 # Configure logging
 logging.basicConfig(
@@ -82,34 +81,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.error(f"Error communicating with Gemini: {e}")
         await update.message.reply_text("Sorry, I encountered an error while processing your request.")
 
-class DummyHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b'Bot is running!')
-
-def run_dummy_server():
-    port = int(os.environ.get('PORT', 8080))
-    server_address = ('0.0.0.0', port)
-    httpd = HTTPServer(server_address, DummyHandler)
-    httpd.serve_forever()
-
 def main() -> None:
     if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
         logger.error("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY in environment variables.")
         return
-
-    # Start a dummy web server on a separate thread to satisfy Render's port binding requirement
-    threading.Thread(target=run_dummy_server, daemon=True).start()
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Bot is starting...")
-    
     # Fix for Python 3.10+ event loop RuntimeError on some environments
     try:
         loop = asyncio.get_event_loop()
@@ -117,7 +98,20 @@ def main() -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-    app.run_polling()
+    port = int(os.environ.get('PORT', 8080))
+
+    if WEBHOOK_URL:
+        logger.info(f"Starting webhook on port {port} with URL {WEBHOOK_URL}")
+        # When using webhooks, the application starts its own HTTP server.
+        # This completely replaces the need for the dummy server!
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            webhook_url=WEBHOOK_URL
+        )
+    else:
+        logger.info("WEBHOOK_URL not found in environment. Falling back to long-polling.")
+        app.run_polling()
 
 if __name__ == "__main__":
     main()
