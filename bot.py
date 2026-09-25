@@ -28,9 +28,13 @@ user_chats = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
-    if ALLOWED_USER_ID and user_id != ALLOWED_USER_ID:
-        await update.message.reply_text("Sorry, you are not authorized to use this bot.")
-        return
+    username = update.effective_user.username
+
+    if ALLOWED_USER_ID:
+        allowed = [u.strip() for u in ALLOWED_USER_ID.split(',')]
+        if user_id not in allowed and username not in allowed:
+            await update.message.reply_text("Sorry, you are not authorized to use this bot.")
+            return
 
     # Reset chat history on /start
     user_chats[user_id] = model.start_chat(history=[])
@@ -43,9 +47,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
-    if ALLOWED_USER_ID and user_id != ALLOWED_USER_ID:
-        # Ignore messages from unauthorized users silently or reply once.
-        return
+    username = update.effective_user.username
+
+    if ALLOWED_USER_ID:
+        allowed = [u.strip() for u in ALLOWED_USER_ID.split(',')]
+        if user_id not in allowed and username not in allowed:
+            # Ignore messages from unauthorized users silently or reply once.
+            return
 
     user_message = update.message.text
 
