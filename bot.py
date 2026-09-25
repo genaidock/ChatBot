@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash") # Use flash for higher free tier limits (1500/day)
+model = genai.GenerativeModel("gemini-2.5-flash") # Use 2.5-flash for higher free tier limits
 
 # Initialize a chat session dictionary to keep context per user
 user_chats = {}
