@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 from dotenv import load_dotenv
 from telegram import Update
@@ -90,6 +91,14 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot is starting...")
+    
+    # Fix for Python 3.10+ event loop RuntimeError on some environments
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     app.run_polling()
 
 if __name__ == "__main__":
