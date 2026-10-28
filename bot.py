@@ -26,8 +26,9 @@ TELEGRAM_TOKEN = (
     or os.getenv("TELEGRAM_BOT_TOKEN") 
     or "8715603196:AAGDJLhd-KeCoXH5lhY69FhOAm6t3Oj42yI"
 )
-VENICE_KEY = os.getenv("VENICE_KEY") or "VENICE_INFERENCE_KEY_UcDRFCVsrCDQ4mUwb57YRW_pkjzm3SUoxQM7O6TJDe"
+VENICE_KEY = os.getenv("VENICE_KEY")
 OPENROUTER_KEY = os.getenv("OPENROUTER_KEY")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 # --- Local AI Models (Ollama on Oracle Server) ---
@@ -42,7 +43,7 @@ ollama_client = AsyncOpenAI(
 )
 venice_client = AsyncOpenAI(
     base_url="https://api.venice.ai/api/v1",
-    api_key=VENICE_KEY
+    api_key=VENICE_KEY or "not-provided"
 )
 openrouter_client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -63,17 +64,19 @@ def build_providers_list():
             "model": CURRENT_LOCAL_MODEL
         })
     # 2. Venice AI (Venice Uncensored)
-    providers.append({
-        "name": "venice",
-        "client": venice_client,
-        "model": "venice-uncensored-1-2"
-    })
-    # 3. OpenRouter (Dolphin Mistral Free)
-    providers.append({
-        "name": "openrouter",
-        "client": openrouter_client,
-        "model": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
-    })
+    if VENICE_KEY:
+        providers.append({
+            "name": "venice",
+            "client": venice_client,
+            "model": "venice-uncensored-1-2"
+        })
+    # 3. OpenRouter (Verified Active Free Model)
+    if OPENROUTER_KEY:
+        providers.append({
+            "name": "openrouter",
+            "client": openrouter_client,
+            "model": OPENROUTER_MODEL
+        })
     # 4. Pollinations (100% Free Fallback)
     providers.append({
         "name": "pollinations",
@@ -230,13 +233,11 @@ async def imagine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Use: /imagine cyberpunk girl in Pune rain, neon lights")
         return
 
-    # Inform user and send typing/uploading indicator
     status_msg = await update.message.reply_text("🎨 Generating image with Flux, please wait...")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
 
     url = f"https://image.pollinations.ai/prompt/{quote_plus(prompt)}?model=flux&width=1024&height=1024&nologo=true&enhance=true&seed={int(time.time())}"
 
-    # Fetch image bytes via httpx instead of passing URL to Telegram to prevent "Failed to get http url content" timeouts
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.get(url, follow_redirects=True)
