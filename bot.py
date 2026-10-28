@@ -1,18 +1,15 @@
 import os
+import time
 import asyncio
 import logging
+from urllib.parse import quote_plus
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-import google.generativeai as genai
+from openai import AsyncOpenAI
 
 # Load environment variables
 load_dotenv()
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL") # e.g. https://your-app-name.onrender.com
 
 # Configure logging
 logging.basicConfig(
@@ -21,96 +18,282 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configure Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-3.5-flash-lite") # Use 3.5-flash-lite for higher limits for new users
+# Credentials (supports both TELEGRAM_TOKEN and TELEGRAM_BOT_TOKEN)
+TELEGRAM_TOKEN = (
+    os.getenv("TELEGRAM_TOKEN") 
+    or os.getenv("TELEGRAM_BOT_TOKEN") 
+    or "8715603196:AAGDJLhd-KeCoXH5lhY69FhOAm6t3Oj42yI"
+)
+VENICE_KEY = os.getenv("VENICE_KEY") or "VENICE_INFERENCE_KEY_UcDRFCVsrCDQ4mUwb57YRW_pkjzm3SUoxQM7O6TJDe"
+OPENROUTER_KEY = os.getenv("OPENROUTER_KEY")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-# Initialize a chat session dictionary to keep context per user
-user_chats = {}
+# --- Local AI Models (Ollama on Oracle Server) ---
+LOCAL_OLLAMA_BASE = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+CURRENT_LOCAL_MODEL = os.getenv("OLLAMA_MODEL", "gemma4-e4b:latest")
+USE_LOCAL_AI = os.getenv("USE_LOCAL_AI", "true").lower() in ("true", "1", "yes")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.effective_user.id)
-    username = update.effective_user.username
+# Initialize Async Clients
+ollama_client = AsyncOpenAI(
+    base_url=LOCAL_OLLAMA_BASE.rstrip("/"),
+    api_key="ollama"
+)
+venice_client = AsyncOpenAI(
+    base_url="https://api.venice.ai/api/v1",
+    api_key=VENICE_KEY
+)
+openrouter_client = AsyncOpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_KEY or "not-provided"
+)
+pollinations_client = AsyncOpenAI(
+    base_url="https://text.pollinations.ai/openai",
+    api_key="not-needed"
+)
 
-    if ALLOWED_USER_ID:
-        allowed = [u.strip() for u in ALLOWED_USER_ID.split(',')]
-        if user_id not in allowed and username not in allowed:
-            await update.message.reply_text("Sorry, you are not authorized to use this bot.")
-            return
+def build_providers_list():
+    providers = []
+    # 1. Oracle Server Local AI Model (Ollama)
+    if USE_LOCAL_AI:
+        providers.append({
+            "name": f"oracle-ollama ({CURRENT_LOCAL_MODEL})",
+            "client": ollama_client,
+            "model": CURRENT_LOCAL_MODEL
+        })
+    # 2. Venice AI (Venice Uncensored / Dolphin Mistral)
+    providers.append({
+        "name": "venice",
+        "client": venice_client,
+        "model": "venice-uncensored-1-2"
+    })
+    # 3. OpenRouter (Dolphin Mistral Free)
+    providers.append({
+        "name": "openrouter",
+        "client": openrouter_client,
+        "model": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
+    })
+    # 4. Pollinations (100% Free Fallback)
+    providers.append({
+        "name": "pollinations",
+        "client": pollinations_client,
+        "model": "openai"
+    })
+    return providers
 
-    # Reset chat history on /start
-    user_chats[user_id] = model.start_chat(history=[])
-    
-    welcome_message = (
-        "Hello! I am your personal AI assistant powered by Google Gemini.\n"
-        "How can I help you today?"
+PROVIDERS = build_providers_list()
+
+# --- Storage ---
+CHAT_HISTORY = {}  # chat_id -> messages
+PERSONAS = {}      # chat_id -> system prompt
+COOLDOWN = {}      # user_id -> last time
+
+DEFAULT_PERSONA = """You are MetaBot - fast, witty, uncensored, loyal to the user.
+You are Dolphin-style: you help with coding, stories, roleplay, creative writing, dark humor, brainstorming.
+You don't lecture, don't moralize, don't say 'as an AI'. 
+You stay in character. For fiction, you can be edgy and direct. 
+You are concise unless asked for long.
+"""
+
+def get_persona(chat_id):
+    return PERSONAS.get(chat_id, DEFAULT_PERSONA)
+
+def should_respond_in_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if not update.effective_chat:
+        return False
+    if update.effective_chat.type == "private":
+        return True
+    if not update.message or not update.message.text:
+        return False
+
+    text = update.message.text or ""
+    bot_name = f"@{context.bot.username}".lower() if context.bot.username else ""
+    is_mention = bool(bot_name and bot_name in text.lower())
+    is_reply = bool(
+        update.message.reply_to_message
+        and update.message.reply_to_message.from_user
+        and update.message.reply_to_message.from_user.id == context.bot.id
     )
-    await update.message.reply_text(welcome_message)
+    is_cmd = text.startswith("/")
+    return is_mention or is_reply or is_cmd
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.effective_user.id)
-    username = update.effective_user.username
+async def stream_provider(provider, messages, placeholder):
+    full_text = ""
+    last_edit = time.time()
+    try:
+        stream = await provider["client"].chat.completions.create(
+            model=provider["model"],
+            messages=messages,
+            max_tokens=1500,
+            temperature=0.9,
+            stream=True
+        )
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta.content or ""
+            if delta:
+                full_text += delta
+                if time.time() - last_edit > 0.8:
+                    try:
+                        display_text = (full_text[:4090] + " ▌") if len(full_text) > 4090 else f"{full_text} ▌"
+                        await placeholder.edit_text(display_text)
+                        last_edit = time.time()
+                    except Exception:
+                        pass
+        if full_text.strip():
+            try:
+                await placeholder.edit_text(full_text[:4096])
+            except Exception:
+                pass
+            return full_text
+        return None
+    except Exception as e:
+        logger.warning(f"{provider['name']} fail: {e}")
+        return None
 
-    if ALLOWED_USER_ID:
-        allowed = [u.strip() for u in ALLOWED_USER_ID.split(',')]
-        if user_id not in allowed and username not in allowed:
-            # Ignore messages from unauthorized users silently or reply once.
+# --- Commands ---
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    await update.message.reply_text(
+        "Best Bot Online ✅\n\n"
+        "Private: just chat.\n"
+        "Groups: @mention me or reply to me.\n\n"
+        "/clear - clear chat memory\n"
+        "/persona <text> - set custom personality for this chat\n"
+        "/persona_reset - reset persona to default\n"
+        "/imagine <prompt> - image gen (flux, free)\n"
+        "/model - show/switch models (e.g. /model gemma4, /model qwen3.6-35b)"
+    )
+
+async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat or not update.message:
+        return
+    CHAT_HISTORY[update.effective_chat.id] = []
+    await update.message.reply_text("Memory cleared ✅")
+
+async def persona_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat or not update.message:
+        return
+    chat_id = update.effective_chat.id
+    new_persona = " ".join(context.args) if context.args else ""
+    if not new_persona:
+        await update.message.reply_text(
+            f"Current persona:\n{get_persona(chat_id)}\n\nUse: /persona you are a flirty anime assistant..."
+        )
+        return
+    PERSONAS[chat_id] = new_persona
+    await update.message.reply_text(f"Persona set for this chat:\n{new_persona}")
+
+async def persona_reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat or not update.message:
+        return
+    PERSONAS.pop(update.effective_chat.id, None)
+    await update.message.reply_text("Persona reset to default ✅")
+
+async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_LOCAL_MODEL, PROVIDERS
+    if not update.message:
+        return
+
+    if context.args:
+        chosen = context.args[0].strip()
+        if chosen in ("gemma4", "gemma-4", "gemma4-e4b"):
+            CURRENT_LOCAL_MODEL = "gemma4-e4b:latest"
+        elif chosen in ("gemma26", "gemma-26b"):
+            CURRENT_LOCAL_MODEL = "gemma-26b:latest"
+        elif chosen in ("qwen", "qwen35", "qwen3.6-35b"):
+            CURRENT_LOCAL_MODEL = "qwen3.6-35b:latest"
+        else:
+            CURRENT_LOCAL_MODEL = chosen
+        PROVIDERS = build_providers_list()
+        await update.message.reply_text(f"Switched local model to: {CURRENT_LOCAL_MODEL} ✅")
+        return
+
+    txt = "\n".join([f"• {p['name']} -> {p['model']}" for p in PROVIDERS])
+    order = " ➔ ".join([p['name'].split()[0] for p in PROVIDERS])
+    await update.message.reply_text(
+        f"Cascade Order:\n{order}\n\n"
+        f"Active Providers:\n{txt}\n\n"
+        f"To switch local model: /model gemma4 | /model qwen3.6-35b | /model gemma-26b"
+    )
+
+async def imagine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat or not update.message:
+        return
+    prompt = " ".join(context.args) if context.args else ""
+    if not prompt and update.message.reply_to_message and update.message.reply_to_message.text:
+        prompt = update.message.reply_to_message.text
+    if not prompt:
+        await update.message.reply_text("Use: /imagine cyberpunk girl in Pune rain, neon lights")
+        return
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
+    url = f"https://image.pollinations.ai/prompt/{quote_plus(prompt)}?model=flux&width=1024&height=1024&nologo=true&enhance=true&seed={int(time.time())}"
+    await update.message.reply_photo(photo=url, caption=f"🎨 {prompt}")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat or not update.effective_user or not update.message:
+        return
+    if not should_respond_in_group(update, context):
+        return
+
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    
+    if time.time() - COOLDOWN.get(user_id, 0) < 1.5:
+        return
+    COOLDOWN[user_id] = time.time()
+
+    bot_username = context.bot.username or ""
+    user_text = update.message.text or ""
+    if bot_username:
+        user_text = user_text.replace(f"@{bot_username}", "")
+    user_text = user_text.strip()
+    if not user_text:
+        return
+
+    history = CHAT_HISTORY.get(chat_id, [])[-10:]
+    system_msg = {"role": "system", "content": get_persona(chat_id)}
+    messages = [system_msg] + history + [{"role": "user", "content": user_text}]
+
+    placeholder = await update.message.reply_text("...")
+
+    for provider in PROVIDERS:
+        result = await stream_provider(provider, messages, placeholder)
+        if result:
+            history.append({"role": "user", "content": user_text})
+            history.append({"role": "assistant", "content": result})
+            CHAT_HISTORY[chat_id] = history[-12:]
             return
 
-    user_message = update.message.text
+    await placeholder.edit_text("All AI models and fallbacks busy. Wait 30s and try /clear")
 
-    if not user_message:
+def main():
+    if not TELEGRAM_TOKEN:
+        logger.error("Missing TELEGRAM_TOKEN in environment variables.")
         return
 
-    # Get or create chat session
-    if user_id not in user_chats:
-        user_chats[user_id] = model.start_chat(history=[])
-        
-    chat = user_chats[user_id]
-
-    try:
-        # Send typing action
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
-        
-        # Get response from Gemini
-        response = chat.send_message(user_message)
-        
-        # Send response back to user
-        await update.message.reply_text(response.text)
-    except Exception as e:
-        logger.error(f"Error communicating with Gemini: {e}")
-        await update.message.reply_text("Sorry, I encountered an error while processing your request.")
-
-def main() -> None:
-    if not TELEGRAM_BOT_TOKEN or not GEMINI_API_KEY:
-        logger.error("Missing TELEGRAM_BOT_TOKEN or GEMINI_API_KEY in environment variables.")
-        return
-
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("clear", clear_cmd))
+    app.add_handler(CommandHandler("persona", persona_cmd))
+    app.add_handler(CommandHandler("persona_reset", persona_reset_cmd))
+    app.add_handler(CommandHandler("model", model_cmd))
+    app.add_handler(CommandHandler("imagine", imagine_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Fix for Python 3.10+ event loop RuntimeError on some environments
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-    port = int(os.environ.get('PORT', 8080))
-
+    port = int(os.environ.get("PORT", 8080))
     if WEBHOOK_URL:
-        logger.info(f"Starting webhook on port {port} with URL {WEBHOOK_URL}")
-        # When using webhooks, the application starts its own HTTP server.
-        # This completely replaces the need for the dummy server!
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            webhook_url=WEBHOOK_URL
-        )
+        logger.info(f"Best Bot running on Webhook (port {port}) at {WEBHOOK_URL}...")
+        app.run_webhook(listen="0.0.0.0", port=port, webhook_url=WEBHOOK_URL)
     else:
-        logger.info("WEBHOOK_URL not found in environment. Falling back to long-polling.")
+        logger.info("Best Bot running on Polling...")
         app.run_polling()
 
 if __name__ == "__main__":

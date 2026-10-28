@@ -1,41 +1,69 @@
-# Personal Telegram Chatbot powered by Google Gemini
+# Telegram MetaBot (Multi-Provider AI & Image Generation)
 
-This is a personal Telegram chatbot that uses the Google Gemini API to generate responses. It maintains chat history to provide contextual conversations.
+A Telegram chatbot featuring multi-provider streaming fallbacks, uncensored Dolphin-style personas, custom personality switching, and free AI image generation via Flux.
+
+## Key Features
+
+- **Multi-Provider Fallback Cascade:**
+  1. **Venice AI**: `dolphin-mistral-24b-venice-edition`
+  2. **OpenRouter**: `cognitivecomputations/dolphin-mistral-24b-venice-edition:free`
+  3. **Pollinations.ai**: `openai` (100% free fallback, no API key required)
+- **Real-Time Streaming Responses:** Smooth streamed output with live typing indicators.
+- **Custom Personas:** Set any custom persona on the fly per chat (`/persona <prompt>`), or reset to default MetaBot (`/persona_reset`).
+- **AI Image Generation:** Free, high-quality 1024x1024 Flux image generation via `/imagine <prompt>`.
+- **Group & Private Chat Support:** Works automatically in private messages; responds in groups when @mentioned, replied to, or on commands.
+- **Dual Polling & Webhook Support:** Seamless local development with polling; automatic webhook mode for 24/7 cloud hosting on platforms like Render.
+
+## Bot Commands
+
+- `/start` - Welcome message and command list
+- `/clear` - Clear chat context memory
+- `/persona <text>` - Set a custom personality for this chat
+- `/persona_reset` - Reset persona back to default MetaBot
+- `/model` - Display active providers and priority cascade
+- `/imagine <prompt>` - Generate an image using Flux
 
 ## Setup Instructions
 
-1. **Get a Telegram Bot Token:**
-   - Go to Telegram and search for `@BotFather`.
-   - Send `/newbot` and follow the instructions to create a new bot.
-   - Copy the API token provided.
+### 1. Environment Configuration
 
-2. **Get your Telegram User ID:**
-   - To make this bot personal (only responds to you), search for `@userinfobot` or `@RawDataBot` on Telegram.
-   - Start the bot to get your `id` (a number).
+Create or update `.env` in the root directory:
 
-3. **Get a Google Gemini API Key:**
-   - Go to [Google AI Studio](https://aistudio.google.com/).
-   - Create a new API key.
+```env
+TELEGRAM_TOKEN=your_telegram_bot_token_here
+VENICE_KEY=your_venice_api_key_here          # Optional, falls back to OpenRouter/Pollinations
+OPENROUTER_KEY=your_openrouter_api_key_here  # Optional, falls back to Pollinations
+# WEBHOOK_URL=https://your-app-name.onrender.com  # Required only for Webhook deployment on Render
+```
 
-4. **Local Configuration:**
-   - Rename `.env.example` to `.env` in this directory.
-   - Fill in your `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, and `ALLOWED_USER_ID`.
+*(Note: `TELEGRAM_BOT_TOKEN` is also supported for backward compatibility)*
 
-5. **Local Testing:**
-   - Install dependencies: `pip install -r requirements.txt`
-   - Run the bot: `python bot.py`
+### 2. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Run Locally
+
+```bash
+python bot.py
+```
 
 ## Cloud Deployment (Render)
 
-Render is a great free option to host this bot.
-1. Push this code to a GitHub repository.
-2. Sign up on [Render.com](https://render.com/).
-3. Click "New" and select "Web Service".
-4. Connect your GitHub repository.
-5. Setup the deployment:
-   - Environment: `Python 3`
-   - Build Command: `pip install -r requirements.txt`
-   - Start Command: `python bot.py`
-6. Go to "Environment" variables on Render and add the variables from your `.env` file.
-   - **Crucial Step:** Add `WEBHOOK_URL` and set it to your app's public Render URL (e.g., `https://your-app-name.onrender.com`). This tells the bot to use Webhooks instead of long-polling, which allows Telegram to wake up your bot instantly when you send a message!
-7. Deploy!
+1. Push your changes to your GitHub repository:
+   ```bash
+   git add .
+   git commit -m "feat: multi-provider AI bot with image gen and personas"
+   git push
+   ```
+2. On **Render.com**, configure your Web Service:
+   - **Environment:** `Python 3`
+   - **Build Command:** `pip install -r requirements.txt`
+   - **Start Command:** `python bot.py`
+3. Under **Environment Variables**, set:
+   - `TELEGRAM_TOKEN` (or `TELEGRAM_BOT_TOKEN`)
+   - `VENICE_KEY` (optional)
+   - `OPENROUTER_KEY` (optional)
+   - `WEBHOOK_URL` set to `https://your-service-name.onrender.com`
