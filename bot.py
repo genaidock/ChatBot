@@ -1,7 +1,9 @@
 import os
+import io
 import time
 import asyncio
 import logging
+import httpx
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
 from telegram import Update
@@ -60,7 +62,7 @@ def build_providers_list():
             "client": ollama_client,
             "model": CURRENT_LOCAL_MODEL
         })
-    # 2. Venice AI (Venice Uncensored / Dolphin Mistral)
+    # 2. Venice AI (Venice Uncensored)
     providers.append({
         "name": "venice",
         "client": venice_client,
@@ -227,9 +229,30 @@ async def imagine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not prompt:
         await update.message.reply_text("Use: /imagine cyberpunk girl in Pune rain, neon lights")
         return
+
+    # Inform user and send typing/uploading indicator
+    status_msg = await update.message.reply_text("🎨 Generating image with Flux, please wait...")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
+
     url = f"https://image.pollinations.ai/prompt/{quote_plus(prompt)}?model=flux&width=1024&height=1024&nologo=true&enhance=true&seed={int(time.time())}"
-    await update.message.reply_photo(photo=url, caption=f"🎨 {prompt}")
+
+    # Fetch image bytes via httpx instead of passing URL to Telegram to prevent "Failed to get http url content" timeouts
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.get(url, follow_redirects=True)
+            if resp.status_code == 200 and resp.content:
+                photo_file = io.BytesIO(resp.content)
+                photo_file.name = "imagine.jpg"
+                await update.message.reply_photo(photo=photo_file, caption=f"🎨 {prompt}")
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+            else:
+                await status_msg.edit_text(f"❌ Failed to generate image (status {resp.status_code}).")
+    except Exception as e:
+        logger.error(f"Image generation failed: {e}")
+        await status_msg.edit_text(f"❌ Image generation error: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_chat or not update.effective_user or not update.message:
