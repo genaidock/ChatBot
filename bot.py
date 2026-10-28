@@ -42,6 +42,7 @@ USE_LOCAL_AI = os.getenv("USE_LOCAL_AI", "true").lower() in ("true", "1", "yes")
 VENICE_KEY = os.getenv("VENICE_KEY")
 OPENROUTER_KEY = os.getenv("OPENROUTER_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
+POLLINATIONS_KEY = os.getenv("POLLINATIONS_KEY")
 
 def build_providers_list():
     providers = []
@@ -94,10 +95,10 @@ def build_providers_list():
             "model": OPENROUTER_MODEL
         })
 
-    # 5. Pollinations (100% Free Safety Net)
+    # 5. Pollinations (Safety Net Text Completion)
     pollinations_client = AsyncOpenAI(
         base_url="https://text.pollinations.ai/openai",
-        api_key="not-needed"
+        api_key=POLLINATIONS_KEY or "not-needed"
     )
     providers.append({
         "name": "pollinations",
@@ -268,12 +269,21 @@ async def imagine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "image/*,*/*;q=0.8"
     }
+    if POLLINATIONS_KEY:
+        headers["Authorization"] = f"Bearer {POLLINATIONS_KEY}"
 
-    # Free Pollinations endpoint: avoid paid parameters (model=flux, nologo=true, enhance=true, seed) that trigger 402/503
-    urls_to_try = [
-        f"https://image.pollinations.ai/prompt/{quote_plus(prompt)}?width=1024&height=1024",
-        f"https://image.pollinations.ai/prompt/{quote_plus(prompt)}"
-    ]
+    # Build URLs: with API key, full Flux and nologo=true are unlocked!
+    encoded_prompt = quote_plus(prompt)
+    if POLLINATIONS_KEY:
+        urls_to_try = [
+            f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=flux&width=1024&height=1024&nologo=true",
+            f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024"
+        ]
+    else:
+        urls_to_try = [
+            f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024",
+            f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+        ]
 
     image_bytes = None
     last_err = ""
