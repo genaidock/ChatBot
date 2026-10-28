@@ -189,7 +189,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/clear - clear chat memory\n"
         "/persona <text> - set custom personality for this chat\n"
         "/persona_reset - reset persona to default\n"
-        "/imagine <prompt> - image gen (flux, free)\n"
+        "/imagine <prompt> - free AI image generation\n"
         "/model - show/switch models (e.g. /model auto, /model gemma4, /model qwen3.6-35b)"
     )
 
@@ -225,7 +225,6 @@ async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.args:
         chosen = context.args[0].strip()
-        # Shorthand aliases for local Ollama
         if chosen in ("gemma4", "gemma-4", "gemma4-e4b"):
             CURRENT_LOCAL_MODEL = "gemma4-e4b:latest"
             await update.message.reply_text(f"Switched local Ollama model to: {CURRENT_LOCAL_MODEL} ✅")
@@ -262,27 +261,56 @@ async def imagine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Use: /imagine cyberpunk girl in Pune rain, neon lights")
         return
 
-    status_msg = await update.message.reply_text("🎨 Generating image with Flux, please wait...")
+    status_msg = await update.message.reply_text("🎨 Generating image, please wait...")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
 
-    url = f"https://image.pollinations.ai/prompt/{quote_plus(prompt)}?model=flux&width=1024&height=1024&nologo=true&enhance=true&seed={int(time.time())}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "image/*,*/*;q=0.8"
+    }
 
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(url, follow_redirects=True)
-            if resp.status_code == 200 and resp.content:
-                photo_file = io.BytesIO(resp.content)
-                photo_file.name = "imagine.jpg"
-                await update.message.reply_photo(photo=photo_file, caption=f"🎨 {prompt}")
-                try:
-                    await status_msg.delete()
-                except Exception:
-                    pass
-            else:
-                await status_msg.edit_text(f"❌ Failed to generate image (status {resp.status_code}).")
-    except Exception as e:
-        logger.error(f"Image generation failed: {e}")
-        await status_msg.edit_text(f"❌ Image generation error: {e}")
+    # Free Pollinations endpoint: avoid paid parameters (model=flux, nologo=true, enhance=true, seed) that trigger 402/503
+    urls_to_try = [
+        f"https://image.pollinations.ai/prompt/{quote_plus(prompt)}?width=1024&height=1024",
+        f"https://image.pollinations.ai/prompt/{quote_plus(prompt)}"
+    ]
+
+    image_bytes = None
+    last_err = ""
+
+    for url in urls_to_try:
+        try:
+            async with httpx.AsyncClient(timeout=45.0, headers=headers) as client:
+                resp = await client.get(url, follow_redirects=True)
+                content_type = resp.headers.get("content-type", "")
+                if resp.status_code == 200 and resp.content and ("image" in content_type or resp.content[:2] == b"\xff\xd8"):
+                    image_bytes = resp.content
+                    break
+                else:
+                    last_err = f"Status {resp.status_code}"
+        except Exception as e:
+            last_err = str(e)
+            logger.warning(f"Pollinations fetch failed: {e}")
+
+    if image_bytes:
+        try:
+            caption_text = f"🎨 {prompt[:1000]}"
+            await update.message.reply_photo(
+                photo=image_bytes,
+                filename="imagine.jpg",
+                caption=caption_text,
+                write_timeout=60.0
+            )
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+            return
+        except Exception as e:
+            logger.error(f"Failed to send photo to Telegram: {e}")
+            await status_msg.edit_text(f"❌ Telegram upload error: {e}")
+    else:
+        await status_msg.edit_text(f"❌ Failed to generate image ({last_err or 'Service busy'}). Please try again.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_chat or not update.effective_user or not update.message:
@@ -326,7 +354,14 @@ def main():
         logger.error("Missing TELEGRAM_TOKEN in environment variables.")
         return
 
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(TELEGRAM_TOKEN)
+        .connect_timeout(30.0)
+        .read_timeout(60.0)
+        .write_timeout(60.0)
+        .build()
+    )
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("clear", clear_cmd))
     app.add_handler(CommandHandler("persona", persona_cmd))
