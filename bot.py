@@ -26,63 +26,85 @@ TELEGRAM_TOKEN = (
     or os.getenv("TELEGRAM_BOT_TOKEN") 
     or "8715603196:AAGDJLhd-KeCoXH5lhY69FhOAm6t3Oj42yI"
 )
-VENICE_KEY = os.getenv("VENICE_KEY")
-OPENROUTER_KEY = os.getenv("OPENROUTER_KEY")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-# --- Local AI Models (Ollama on Oracle Server) ---
+# --- OmniRoute Gateway (Oracle Server / Port 20128) ---
+OMNIROUTE_BASE = os.getenv("OMNIROUTE_BASE", "http://localhost:20128/v1")
+OMNIROUTE_KEY = os.getenv("OMNIROUTE_KEY")
+CURRENT_OMNIROUTE_MODEL = os.getenv("OMNIROUTE_MODEL", "auto")
+
+# --- Local Ollama (Oracle Server / Port 11434) ---
 LOCAL_OLLAMA_BASE = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 CURRENT_LOCAL_MODEL = os.getenv("OLLAMA_MODEL", "gemma4-e4b:latest")
 USE_LOCAL_AI = os.getenv("USE_LOCAL_AI", "true").lower() in ("true", "1", "yes")
 
-# Initialize Async Clients
-ollama_client = AsyncOpenAI(
-    base_url=LOCAL_OLLAMA_BASE.rstrip("/"),
-    api_key="ollama"
-)
-venice_client = AsyncOpenAI(
-    base_url="https://api.venice.ai/api/v1",
-    api_key=VENICE_KEY or "not-provided"
-)
-openrouter_client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_KEY or "not-provided"
-)
-pollinations_client = AsyncOpenAI(
-    base_url="https://text.pollinations.ai/openai",
-    api_key="not-needed"
-)
+# --- Cloud API Providers ---
+VENICE_KEY = os.getenv("VENICE_KEY")
+OPENROUTER_KEY = os.getenv("OPENROUTER_KEY")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
 
 def build_providers_list():
     providers = []
-    # 1. Oracle Server Local AI Model (Ollama)
+    
+    # 1. OmniRoute Gateway on Oracle Server (2,891 models available!)
+    if OMNIROUTE_BASE and OMNIROUTE_KEY:
+        omniroute_client = AsyncOpenAI(
+            base_url=OMNIROUTE_BASE.rstrip("/"),
+            api_key=OMNIROUTE_KEY
+        )
+        providers.append({
+            "name": f"omniroute ({CURRENT_OMNIROUTE_MODEL})",
+            "client": omniroute_client,
+            "model": CURRENT_OMNIROUTE_MODEL
+        })
+
+    # 2. Oracle Server Local Ollama
     if USE_LOCAL_AI:
+        ollama_client = AsyncOpenAI(
+            base_url=LOCAL_OLLAMA_BASE.rstrip("/"),
+            api_key="ollama"
+        )
         providers.append({
             "name": f"oracle-ollama ({CURRENT_LOCAL_MODEL})",
             "client": ollama_client,
             "model": CURRENT_LOCAL_MODEL
         })
-    # 2. Venice AI (Venice Uncensored)
+
+    # 3. Venice AI (Venice Uncensored)
     if VENICE_KEY:
+        venice_client = AsyncOpenAI(
+            base_url="https://api.venice.ai/api/v1",
+            api_key=VENICE_KEY
+        )
         providers.append({
             "name": "venice",
             "client": venice_client,
             "model": "venice-uncensored-1-2"
         })
-    # 3. OpenRouter (Verified Active Free Model)
+
+    # 4. OpenRouter
     if OPENROUTER_KEY:
+        openrouter_client = AsyncOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_KEY
+        )
         providers.append({
             "name": "openrouter",
             "client": openrouter_client,
             "model": OPENROUTER_MODEL
         })
-    # 4. Pollinations (100% Free Fallback)
+
+    # 5. Pollinations (100% Free Safety Net)
+    pollinations_client = AsyncOpenAI(
+        base_url="https://text.pollinations.ai/openai",
+        api_key="not-needed"
+    )
     providers.append({
         "name": "pollinations",
         "client": pollinations_client,
         "model": "openai"
     })
+
     return providers
 
 PROVIDERS = build_providers_list()
@@ -168,7 +190,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/persona <text> - set custom personality for this chat\n"
         "/persona_reset - reset persona to default\n"
         "/imagine <prompt> - image gen (flux, free)\n"
-        "/model - show/switch models (e.g. /model gemma4, /model qwen3.6-35b)"
+        "/model - show/switch models (e.g. /model auto, /model gemma4, /model qwen3.6-35b)"
     )
 
 async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -197,22 +219,27 @@ async def persona_reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Persona reset to default ✅")
 
 async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CURRENT_LOCAL_MODEL, PROVIDERS
+    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
     if not update.message:
         return
 
     if context.args:
         chosen = context.args[0].strip()
+        # Shorthand aliases for local Ollama
         if chosen in ("gemma4", "gemma-4", "gemma4-e4b"):
             CURRENT_LOCAL_MODEL = "gemma4-e4b:latest"
+            await update.message.reply_text(f"Switched local Ollama model to: {CURRENT_LOCAL_MODEL} ✅")
         elif chosen in ("gemma26", "gemma-26b"):
             CURRENT_LOCAL_MODEL = "gemma-26b:latest"
+            await update.message.reply_text(f"Switched local Ollama model to: {CURRENT_LOCAL_MODEL} ✅")
         elif chosen in ("qwen", "qwen35", "qwen3.6-35b"):
             CURRENT_LOCAL_MODEL = "qwen3.6-35b:latest"
+            await update.message.reply_text(f"Switched local Ollama model to: {CURRENT_LOCAL_MODEL} ✅")
         else:
-            CURRENT_LOCAL_MODEL = chosen
+            CURRENT_OMNIROUTE_MODEL = chosen
+            await update.message.reply_text(f"Switched OmniRoute model to: {CURRENT_OMNIROUTE_MODEL} ✅")
+
         PROVIDERS = build_providers_list()
-        await update.message.reply_text(f"Switched local model to: {CURRENT_LOCAL_MODEL} ✅")
         return
 
     txt = "\n".join([f"• {p['name']} -> {p['model']}" for p in PROVIDERS])
@@ -220,7 +247,9 @@ async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Cascade Order:\n{order}\n\n"
         f"Active Providers:\n{txt}\n\n"
-        f"To switch local model: /model gemma4 | /model qwen3.6-35b | /model gemma-26b"
+        f"Switch models on the fly:\n"
+        f"• OmniRoute: /model auto | /model auto/best-chat | /model auto/best-coding\n"
+        f"• Ollama: /model gemma4 | /model qwen3.6-35b"
     )
 
 async def imagine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
