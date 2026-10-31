@@ -21,11 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Credentials (supports both TELEGRAM_TOKEN and TELEGRAM_BOT_TOKEN)
-TELEGRAM_TOKEN = (
-    os.getenv("TELEGRAM_TOKEN") 
-    or os.getenv("TELEGRAM_BOT_TOKEN") 
-    or "8715603196:AAGDJLhd-KeCoXH5lhY69FhOAm6t3Oj42yI"
-)
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 # --- OmniRoute Gateway (Oracle Server / Port 20128) ---
