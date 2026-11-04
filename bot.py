@@ -194,6 +194,15 @@ def should_respond_in_group(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def stream_provider(provider, messages, placeholder):
     full_text = ""
     last_edit = time.time()
+    is_ollama = "ollama" in provider["name"].lower()
+    # On CPU servers, loading a 4-5GB model from disk into RAM can take 20-40 seconds
+    timeout_val = 80.0 if is_ollama else 30.0
+
+    extra_kwargs = {}
+    if is_ollama:
+        # Keep model resident in RAM for 24h so it never unloads after 5 min of inactivity
+        extra_kwargs["extra_body"] = {"keep_alive": "24h"}
+
     try:
         stream = await asyncio.wait_for(
             provider["client"].chat.completions.create(
@@ -201,9 +210,10 @@ async def stream_provider(provider, messages, placeholder):
                 messages=messages,
                 max_tokens=1500,
                 temperature=0.9,
-                stream=True
+                stream=True,
+                **extra_kwargs
             ),
-            timeout=25.0
+            timeout=timeout_val
         )
         async for chunk in stream:
             if not chunk.choices:
