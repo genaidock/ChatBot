@@ -145,12 +145,15 @@ async def stream_provider(provider, messages, placeholder):
     full_text = ""
     last_edit = time.time()
     try:
-        stream = await provider["client"].chat.completions.create(
-            model=provider["model"],
-            messages=messages,
-            max_tokens=1500,
-            temperature=0.9,
-            stream=True
+        stream = await asyncio.wait_for(
+            provider["client"].chat.completions.create(
+                model=provider["model"],
+                messages=messages,
+                max_tokens=1500,
+                temperature=0.9,
+                stream=True
+            ),
+            timeout=25.0
         )
         async for chunk in stream:
             if not chunk.choices:
@@ -188,7 +191,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/persona <text> - set custom personality for this chat\n"
         "/persona_reset - reset persona to default\n"
         "/imagine <prompt> - free AI image generation\n"
-        "/model - show/switch models (e.g. /model auto, /model gemma4, /model qwen3.6-35b)"
+        "/model - show/switch models (e.g. /model qwen, /model gemma, /model auto)"
     )
 
 async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -222,19 +225,33 @@ async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if context.args:
-        chosen = context.args[0].strip()
-        if chosen in ("gemma4", "gemma-4", "gemma4-e4b"):
+        chosen = context.args[0].strip().lower()
+        if chosen in ("qwen", "qwen35", "qwen3.6-35b", "auto/qwen"):
+            CURRENT_OMNIROUTE_MODEL = "auto/qwen"
+            CURRENT_LOCAL_MODEL = "qwen3.6-35b"
+            await update.message.reply_text("Switched model to Qwen (`auto/qwen`) ✅")
+        elif chosen in ("gemma", "gemma4", "gemma-4", "gemma4-e4b"):
+            CURRENT_OMNIROUTE_MODEL = "auto/gemma"
             CURRENT_LOCAL_MODEL = "gemma4-e4b:latest"
-            await update.message.reply_text(f"Switched local Ollama model to: {CURRENT_LOCAL_MODEL} ✅")
+            await update.message.reply_text("Switched model to Gemma (`auto/gemma` / `gemma4-e4b`) ✅")
         elif chosen in ("gemma26", "gemma-26b"):
             CURRENT_LOCAL_MODEL = "gemma-26b:latest"
             await update.message.reply_text(f"Switched local Ollama model to: {CURRENT_LOCAL_MODEL} ✅")
-        elif chosen in ("qwen", "qwen35", "qwen3.6-35b"):
-            CURRENT_LOCAL_MODEL = "qwen3.6-35b:latest"
-            await update.message.reply_text(f"Switched local Ollama model to: {CURRENT_LOCAL_MODEL} ✅")
+        elif chosen in ("deepseek", "auto/deepseek"):
+            CURRENT_OMNIROUTE_MODEL = "auto/deepseek"
+            await update.message.reply_text("Switched model to DeepSeek (`auto/deepseek`) ✅")
+        elif chosen in ("coding", "code", "best-coding", "auto/best-coding"):
+            CURRENT_OMNIROUTE_MODEL = "auto/best-coding"
+            await update.message.reply_text("Switched model to Best Coding (`auto/best-coding`) ✅")
+        elif chosen in ("chat", "best-chat", "auto/best-chat"):
+            CURRENT_OMNIROUTE_MODEL = "auto/best-chat"
+            await update.message.reply_text("Switched model to Best Chat (`auto/best-chat`) ✅")
+        elif chosen in ("auto", "default"):
+            CURRENT_OMNIROUTE_MODEL = "auto"
+            await update.message.reply_text("Switched model to Auto-Routing (`auto`) ✅")
         else:
             CURRENT_OMNIROUTE_MODEL = chosen
-            await update.message.reply_text(f"Switched OmniRoute model to: {CURRENT_OMNIROUTE_MODEL} ✅")
+            await update.message.reply_text(f"Switched OmniRoute model to: `{CURRENT_OMNIROUTE_MODEL}` ✅")
 
         PROVIDERS = build_providers_list()
         return
@@ -245,8 +262,11 @@ async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Cascade Order:\n{order}\n\n"
         f"Active Providers:\n{txt}\n\n"
         f"Switch models on the fly:\n"
-        f"• OmniRoute: /model auto | /model auto/best-chat | /model auto/best-coding\n"
-        f"• Ollama: /model gemma4 | /model qwen3.6-35b"
+        f"• `/model qwen` - High-speed Qwen AI\n"
+        f"• `/model gemma` - Gemma 4\n"
+        f"• `/model deepseek` - DeepSeek\n"
+        f"• `/model auto` - Smart Auto-Routing\n"
+        f"• `/model auto/best-coding` - Best Coding Model"
     )
 
 async def imagine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
