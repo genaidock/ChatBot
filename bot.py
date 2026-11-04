@@ -43,29 +43,41 @@ POLLINATIONS_KEY = os.getenv("POLLINATIONS_KEY")
 def build_providers_list():
     providers = []
     
-    # 1. OmniRoute Gateway on Oracle Server (2,891 models available!)
+    omniroute_provider = None
     if OMNIROUTE_BASE and OMNIROUTE_KEY:
         omniroute_client = AsyncOpenAI(
             base_url=OMNIROUTE_BASE.rstrip("/"),
             api_key=OMNIROUTE_KEY
         )
-        providers.append({
+        omniroute_provider = {
             "name": f"omniroute ({CURRENT_OMNIROUTE_MODEL})",
             "client": omniroute_client,
             "model": CURRENT_OMNIROUTE_MODEL
-        })
+        }
 
-    # 2. Oracle Server Local Ollama
+    ollama_provider = None
     if USE_LOCAL_AI:
         ollama_client = AsyncOpenAI(
             base_url=LOCAL_OLLAMA_BASE.rstrip("/"),
             api_key="ollama"
         )
-        providers.append({
+        ollama_provider = {
             "name": f"oracle-ollama ({CURRENT_LOCAL_MODEL})",
             "client": ollama_client,
             "model": CURRENT_LOCAL_MODEL
-        })
+        }
+
+    # If the active local model is an uncensored model (like dolphin), prioritize local Ollama
+    if "dolphin" in CURRENT_LOCAL_MODEL.lower():
+        if ollama_provider:
+            providers.append(ollama_provider)
+        if omniroute_provider:
+            providers.append(omniroute_provider)
+    else:
+        if omniroute_provider:
+            providers.append(omniroute_provider)
+        if ollama_provider:
+            providers.append(ollama_provider)
 
     # 3. Venice AI (Venice Uncensored)
     if VENICE_KEY:
@@ -237,6 +249,13 @@ async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif chosen in ("gemma26", "gemma-26b"):
             CURRENT_LOCAL_MODEL = "gemma-26b:latest"
             await update.message.reply_text(f"Switched local Ollama model to: {CURRENT_LOCAL_MODEL} ✅")
+        elif chosen in ("dolphin", "dolphin3", "uncensored"):
+            CURRENT_LOCAL_MODEL = "dolphin3:latest"
+            CURRENT_OMNIROUTE_MODEL = "auto/qwen"
+            await update.message.reply_text(
+                "Switched to Uncensored Dolphin 3.0 (`dolphin3`) 🐬🔓\n\n"
+                "Tip: Make sure you ran `ollama pull dolphin3` on your server!"
+            )
         elif chosen in ("deepseek", "auto/deepseek"):
             CURRENT_OMNIROUTE_MODEL = "auto/deepseek"
             await update.message.reply_text("Switched model to DeepSeek (`auto/deepseek`) ✅")
@@ -262,6 +281,7 @@ async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Cascade Order:\n{order}\n\n"
         f"Active Providers:\n{txt}\n\n"
         f"Switch models on the fly:\n"
+        f"• `/model dolphin` - 100% Uncensored Dolphin 3.0 (Local)\n"
         f"• `/model qwen` - High-speed Qwen AI\n"
         f"• `/model gemma` - Gemma 4\n"
         f"• `/model deepseek` - DeepSeek\n"
