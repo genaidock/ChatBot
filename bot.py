@@ -195,16 +195,30 @@ async def stream_provider(provider, messages, placeholder):
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
-    await update.message.reply_text(
-        "Best Bot Online ✅\n\n"
-        "Private: just chat.\n"
-        "Groups: @mention me or reply to me.\n\n"
-        "/clear - clear chat memory\n"
-        "/persona <text> - set custom personality for this chat\n"
-        "/persona_reset - reset persona to default\n"
-        "/imagine <prompt> - free AI image generation\n"
-        "/model - show/switch models (e.g. /model dolmis, /model dolphin, /model qwen)"
+    msg = (
+        "🤖 <b>Welcome to Best Bot Online</b>\n\n"
+        "💬 <b>How to Chat:</b>\n"
+        "• Private: Just type and send your message.\n"
+        "• Groups: @mention me or reply to my message.\n\n"
+        "🧠 <b>Available AI Models (Tap any shortcut to switch):</b>\n\n"
+        "🐬 <i>Uncensored Models (Zero Guardrails / Refusals):</i>\n"
+        "• /dolmis — <b>Dolphin Mistral 7B</b> (Fast, direct, uncensored)\n"
+        "• /dolphin — <b>Dolphin 3.0 Llama 8B</b> (Deep logic, uncensored)\n\n"
+        "⚡ <i>Cloud AI Models (High Performance):</i>\n"
+        "• /qwen — <b>Qwen AI</b> (Fast, multilingual, smart)\n"
+        "• /deepseek — <b>DeepSeek</b> (Math, reasoning & analysis)\n"
+        "• /gemma — <b>Google Gemma 4</b> (Google latest architecture)\n"
+        "• /coding — <b>Best Coding AI</b> (Programming & debugging)\n"
+        "• /chat — <b>Best Chat AI</b> (Fluid everyday conversation)\n"
+        "• /auto — <b>Smart Auto-Routing</b> (Auto-selects optimal model)\n\n"
+        "⚙️ <b>Control Commands:</b>\n"
+        "• /model — View currently active model cascade\n"
+        "• /clear — Clear chat memory history\n"
+        "• /imagine &lt;prompt&gt; — Free Flux AI image generation\n"
+        "• /persona &lt;text&gt; — Set custom personality\n"
+        "• /persona_reset — Reset persona to default"
     )
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_chat or not update.message:
@@ -248,6 +262,56 @@ async def dolphin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CURRENT_OMNIROUTE_MODEL = "auto/qwen"
     PROVIDERS = build_providers_list()
     await update.message.reply_text("Switched to Uncensored Dolphin 3.0 (`dolphin3`) 🐬🔓")
+
+async def qwen_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
+    if not update.message:
+        return
+    CURRENT_OMNIROUTE_MODEL = "auto/qwen"
+    CURRENT_LOCAL_MODEL = "qwen3.6-35b"
+    PROVIDERS = build_providers_list()
+    await update.message.reply_text("Switched to Qwen AI (`auto/qwen`) 🚀✅")
+
+async def deepseek_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
+    if not update.message:
+        return
+    CURRENT_OMNIROUTE_MODEL = "auto/deepseek"
+    PROVIDERS = build_providers_list()
+    await update.message.reply_text("Switched to DeepSeek (`auto/deepseek`) 🧠✅")
+
+async def gemma_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
+    if not update.message:
+        return
+    CURRENT_OMNIROUTE_MODEL = "auto/gemma"
+    CURRENT_LOCAL_MODEL = "gemma4-e4b:latest"
+    PROVIDERS = build_providers_list()
+    await update.message.reply_text("Switched to Google Gemma 4 (`auto/gemma` / `gemma4-e4b`) 💎✅")
+
+async def coding_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
+    if not update.message:
+        return
+    CURRENT_OMNIROUTE_MODEL = "auto/best-coding"
+    PROVIDERS = build_providers_list()
+    await update.message.reply_text("Switched to Best Coding AI (`auto/best-coding`) 💻✅")
+
+async def chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
+    if not update.message:
+        return
+    CURRENT_OMNIROUTE_MODEL = "auto/best-chat"
+    PROVIDERS = build_providers_list()
+    await update.message.reply_text("Switched to Best Chat AI (`auto/best-chat`) 💬✅")
+
+async def auto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
+    if not update.message:
+        return
+    CURRENT_OMNIROUTE_MODEL = "auto"
+    PROVIDERS = build_providers_list()
+    await update.message.reply_text("Switched to Smart Auto-Routing (`auto`) 🎯✅")
 
 async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
@@ -440,6 +504,12 @@ def main():
     app.add_handler(CommandHandler("model", model_cmd))
     app.add_handler(CommandHandler("dolmis", dolmis_cmd))
     app.add_handler(CommandHandler("dolphin", dolphin_cmd))
+    app.add_handler(CommandHandler("qwen", qwen_cmd))
+    app.add_handler(CommandHandler("deepseek", deepseek_cmd))
+    app.add_handler(CommandHandler("gemma", gemma_cmd))
+    app.add_handler(CommandHandler("coding", coding_cmd))
+    app.add_handler(CommandHandler("chat", chat_cmd))
+    app.add_handler(CommandHandler("auto", auto_cmd))
     app.add_handler(CommandHandler("imagine", imagine_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
