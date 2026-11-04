@@ -203,7 +203,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/persona <text> - set custom personality for this chat\n"
         "/persona_reset - reset persona to default\n"
         "/imagine <prompt> - free AI image generation\n"
-        "/model - show/switch models (e.g. /model qwen, /model gemma, /model auto)"
+        "/model - show/switch models (e.g. /model dolmis, /model dolphin, /model qwen)"
     )
 
 async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -231,6 +231,24 @@ async def persona_reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     PERSONAS.pop(update.effective_chat.id, None)
     await update.message.reply_text("Persona reset to default ✅")
 
+async def dolmis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
+    if not update.message:
+        return
+    CURRENT_LOCAL_MODEL = "dolphin-mistral:7b"
+    CURRENT_OMNIROUTE_MODEL = "auto/qwen"
+    PROVIDERS = build_providers_list()
+    await update.message.reply_text("Switched to Uncensored Dolphin Mistral 7B (`dolphin-mistral:7b`) 🐬⚡")
+
+async def dolphin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
+    if not update.message:
+        return
+    CURRENT_LOCAL_MODEL = "dolphin3:latest"
+    CURRENT_OMNIROUTE_MODEL = "auto/qwen"
+    PROVIDERS = build_providers_list()
+    await update.message.reply_text("Switched to Uncensored Dolphin 3.0 (`dolphin3`) 🐬🔓")
+
 async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
     if not update.message:
@@ -255,7 +273,7 @@ async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "Switched to Uncensored Dolphin 3.0 (`dolphin3`) 🐬🔓"
             )
-        elif chosen in ("dolphin-mistral", "mistral-dolphin", "dolphin-mistral:7b"):
+        elif chosen in ("dolmis", "dol-mis", "dolphin-mistral", "mistral-dolphin", "dolphin-mistral:7b"):
             CURRENT_LOCAL_MODEL = "dolphin-mistral:7b"
             CURRENT_OMNIROUTE_MODEL = "auto/qwen"
             await update.message.reply_text(
@@ -286,8 +304,8 @@ async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Cascade Order:\n{order}\n\n"
         f"Active Providers:\n{txt}\n\n"
         f"Switch models on the fly:\n"
+        f"• `/model dolmis` - Uncensored Dolphin Mistral (7B, Fast)\n"
         f"• `/model dolphin` - Uncensored Dolphin 3.0 (8B)\n"
-        f"• `/model dolphin-mistral` - Uncensored Dolphin Mistral (7B, Fast)\n"
         f"• `/model qwen` - High-speed Qwen AI\n"
         f"• `/model gemma` - Gemma 4\n"
         f"• `/model deepseek` - DeepSeek\n"
@@ -420,6 +438,8 @@ def main():
     app.add_handler(CommandHandler("persona", persona_cmd))
     app.add_handler(CommandHandler("persona_reset", persona_reset_cmd))
     app.add_handler(CommandHandler("model", model_cmd))
+    app.add_handler(CommandHandler("dolmis", dolmis_cmd))
+    app.add_handler(CommandHandler("dolphin", dolphin_cmd))
     app.add_handler(CommandHandler("imagine", imagine_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
