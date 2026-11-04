@@ -253,8 +253,13 @@ async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             CURRENT_LOCAL_MODEL = "dolphin3:latest"
             CURRENT_OMNIROUTE_MODEL = "auto/qwen"
             await update.message.reply_text(
-                "Switched to Uncensored Dolphin 3.0 (`dolphin3`) 🐬🔓\n\n"
-                "Tip: Make sure you ran `ollama pull dolphin3` on your server!"
+                "Switched to Uncensored Dolphin 3.0 (`dolphin3`) 🐬🔓"
+            )
+        elif chosen in ("dolphin-mistral", "mistral-dolphin", "dolphin-mistral:7b"):
+            CURRENT_LOCAL_MODEL = "dolphin-mistral:7b"
+            CURRENT_OMNIROUTE_MODEL = "auto/qwen"
+            await update.message.reply_text(
+                "Switched to Uncensored Dolphin Mistral 7B (`dolphin-mistral:7b`) 🐬⚡"
             )
         elif chosen in ("deepseek", "auto/deepseek"):
             CURRENT_OMNIROUTE_MODEL = "auto/deepseek"
@@ -281,7 +286,8 @@ async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Cascade Order:\n{order}\n\n"
         f"Active Providers:\n{txt}\n\n"
         f"Switch models on the fly:\n"
-        f"• `/model dolphin` - 100% Uncensored Dolphin 3.0 (Local)\n"
+        f"• `/model dolphin` - Uncensored Dolphin 3.0 (8B)\n"
+        f"• `/model dolphin-mistral` - Uncensored Dolphin Mistral (7B, Fast)\n"
         f"• `/model qwen` - High-speed Qwen AI\n"
         f"• `/model gemma` - Gemma 4\n"
         f"• `/model deepseek` - DeepSeek\n"
