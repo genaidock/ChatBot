@@ -205,7 +205,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /dolmis — <b>Dolphin Mistral 7B</b> (Fast, direct, uncensored)\n"
         "• /dolphin — <b>Dolphin 3.0 Llama 8B</b> (Deep logic, uncensored)\n\n"
         "⚡ <i>Cloud AI Models (High Performance):</i>\n"
-        "• /qwen — <b>Qwen AI</b> (Fast, multilingual, smart)\n"
         "• /deepseek — <b>DeepSeek</b> (Math, reasoning & analysis)\n"
         "• /gemma — <b>Google Gemma 4</b> (Google latest architecture)\n"
         "• /coding — <b>Best Coding AI</b> (Programming & debugging)\n"
@@ -250,7 +249,7 @@ async def dolmis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
     CURRENT_LOCAL_MODEL = "dolphin-mistral:7b"
-    CURRENT_OMNIROUTE_MODEL = "auto/qwen"
+    CURRENT_OMNIROUTE_MODEL = "auto"
     PROVIDERS = build_providers_list()
     await update.message.reply_text("Switched to Uncensored Dolphin Mistral 7B (`dolphin-mistral:7b`) 🐬⚡")
 
@@ -259,18 +258,9 @@ async def dolphin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
     CURRENT_LOCAL_MODEL = "dolphin3:latest"
-    CURRENT_OMNIROUTE_MODEL = "auto/qwen"
+    CURRENT_OMNIROUTE_MODEL = "auto"
     PROVIDERS = build_providers_list()
     await update.message.reply_text("Switched to Uncensored Dolphin 3.0 (`dolphin3`) 🐬🔓")
-
-async def qwen_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
-    if not update.message:
-        return
-    CURRENT_OMNIROUTE_MODEL = "auto/qwen"
-    CURRENT_LOCAL_MODEL = "qwen3.6-35b"
-    PROVIDERS = build_providers_list()
-    await update.message.reply_text("Switched to Qwen AI (`auto/qwen`) 🚀✅")
 
 async def deepseek_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
@@ -320,11 +310,7 @@ async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.args:
         chosen = context.args[0].strip().lower()
-        if chosen in ("qwen", "qwen35", "qwen3.6-35b", "auto/qwen"):
-            CURRENT_OMNIROUTE_MODEL = "auto/qwen"
-            CURRENT_LOCAL_MODEL = "qwen3.6-35b"
-            await update.message.reply_text("Switched model to Qwen (`auto/qwen`) ✅")
-        elif chosen in ("gemma", "gemma4", "gemma-4", "gemma4-e4b"):
+        if chosen in ("gemma", "gemma4", "gemma-4", "gemma4-e4b"):
             CURRENT_OMNIROUTE_MODEL = "auto/gemma"
             CURRENT_LOCAL_MODEL = "gemma4-e4b:latest"
             await update.message.reply_text("Switched model to Gemma (`auto/gemma` / `gemma4-e4b`) ✅")
@@ -333,13 +319,13 @@ async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Switched local Ollama model to: {CURRENT_LOCAL_MODEL} ✅")
         elif chosen in ("dolphin", "dolphin3", "uncensored"):
             CURRENT_LOCAL_MODEL = "dolphin3:latest"
-            CURRENT_OMNIROUTE_MODEL = "auto/qwen"
+            CURRENT_OMNIROUTE_MODEL = "auto"
             await update.message.reply_text(
                 "Switched to Uncensored Dolphin 3.0 (`dolphin3`) 🐬🔓"
             )
         elif chosen in ("dolmis", "dol-mis", "dolphin-mistral", "mistral-dolphin", "dolphin-mistral:7b"):
             CURRENT_LOCAL_MODEL = "dolphin-mistral:7b"
-            CURRENT_OMNIROUTE_MODEL = "auto/qwen"
+            CURRENT_OMNIROUTE_MODEL = "auto"
             await update.message.reply_text(
                 "Switched to Uncensored Dolphin Mistral 7B (`dolphin-mistral:7b`) 🐬⚡"
             )
@@ -370,9 +356,8 @@ async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Switch models on the fly:\n"
         f"• `/model dolmis` - Uncensored Dolphin Mistral (7B, Fast)\n"
         f"• `/model dolphin` - Uncensored Dolphin 3.0 (8B)\n"
-        f"• `/model qwen` - High-speed Qwen AI\n"
-        f"• `/model gemma` - Gemma 4\n"
         f"• `/model deepseek` - DeepSeek\n"
+        f"• `/model gemma` - Gemma 4\n"
         f"• `/model auto` - Smart Auto-Routing\n"
         f"• `/model auto/best-coding` - Best Coding Model"
     )
@@ -504,7 +489,6 @@ def main():
     app.add_handler(CommandHandler("model", model_cmd))
     app.add_handler(CommandHandler("dolmis", dolmis_cmd))
     app.add_handler(CommandHandler("dolphin", dolphin_cmd))
-    app.add_handler(CommandHandler("qwen", qwen_cmd))
     app.add_handler(CommandHandler("deepseek", deepseek_cmd))
     app.add_handler(CommandHandler("gemma", gemma_cmd))
     app.add_handler(CommandHandler("coding", coding_cmd))
