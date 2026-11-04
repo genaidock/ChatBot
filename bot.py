@@ -20,18 +20,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Credentials (supports both TELEGRAM_TOKEN and TELEGRAM_BOT_TOKEN)
+# Credentials
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 # --- OmniRoute Gateway (Oracle Server / Port 20128) ---
 OMNIROUTE_BASE = os.getenv("OMNIROUTE_BASE", "http://localhost:20128/v1")
 OMNIROUTE_KEY = os.getenv("OMNIROUTE_KEY")
-CURRENT_OMNIROUTE_MODEL = os.getenv("OMNIROUTE_MODEL", "auto")
+DEFAULT_OMNIROUTE_MODEL = os.getenv("OMNIROUTE_MODEL", "auto")
 
 # --- Local Ollama (Oracle Server / Port 11434) ---
 LOCAL_OLLAMA_BASE = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-CURRENT_LOCAL_MODEL = os.getenv("OLLAMA_MODEL", "gemma4-e4b:latest")
+DEFAULT_LOCAL_MODEL = os.getenv("OLLAMA_MODEL", "gemma4-e4b:latest")
 USE_LOCAL_AI = os.getenv("USE_LOCAL_AI", "true").lower() in ("true", "1", "yes")
 
 # --- Cloud API Providers ---
@@ -40,88 +40,41 @@ OPENROUTER_KEY = os.getenv("OPENROUTER_KEY")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
 POLLINATIONS_KEY = os.getenv("POLLINATIONS_KEY")
 
-def build_providers_list():
-    providers = []
-    
-    omniroute_provider = None
-    if OMNIROUTE_BASE and OMNIROUTE_KEY:
-        omniroute_client = AsyncOpenAI(
-            base_url=OMNIROUTE_BASE.rstrip("/"),
-            api_key=OMNIROUTE_KEY
-        )
-        omniroute_provider = {
-            "name": f"omniroute ({CURRENT_OMNIROUTE_MODEL})",
-            "client": omniroute_client,
-            "model": CURRENT_OMNIROUTE_MODEL
-        }
+# --- Single Persistent Clients (reused across requests) ---
+OMNIROUTE_CLIENT = (
+    AsyncOpenAI(base_url=OMNIROUTE_BASE.rstrip("/"), api_key=OMNIROUTE_KEY)
+    if OMNIROUTE_BASE and OMNIROUTE_KEY
+    else None
+)
 
-    ollama_provider = None
-    if USE_LOCAL_AI:
-        ollama_client = AsyncOpenAI(
-            base_url=LOCAL_OLLAMA_BASE.rstrip("/"),
-            api_key="ollama"
-        )
-        ollama_provider = {
-            "name": f"oracle-ollama ({CURRENT_LOCAL_MODEL})",
-            "client": ollama_client,
-            "model": CURRENT_LOCAL_MODEL
-        }
+OLLAMA_CLIENT = (
+    AsyncOpenAI(base_url=LOCAL_OLLAMA_BASE.rstrip("/"), api_key="ollama")
+    if USE_LOCAL_AI and LOCAL_OLLAMA_BASE
+    else None
+)
 
-    # If the active local model is an uncensored model (like dolphin), prioritize local Ollama
-    if "dolphin" in CURRENT_LOCAL_MODEL.lower():
-        if ollama_provider:
-            providers.append(ollama_provider)
-        if omniroute_provider:
-            providers.append(omniroute_provider)
-    else:
-        if omniroute_provider:
-            providers.append(omniroute_provider)
-        if ollama_provider:
-            providers.append(ollama_provider)
+VENICE_CLIENT = (
+    AsyncOpenAI(base_url="https://api.venice.ai/api/v1", api_key=VENICE_KEY)
+    if VENICE_KEY
+    else None
+)
 
-    # 3. Venice AI (Venice Uncensored)
-    if VENICE_KEY:
-        venice_client = AsyncOpenAI(
-            base_url="https://api.venice.ai/api/v1",
-            api_key=VENICE_KEY
-        )
-        providers.append({
-            "name": "venice",
-            "client": venice_client,
-            "model": "venice-uncensored-1-2"
-        })
+OPENROUTER_CLIENT = (
+    AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_KEY)
+    if OPENROUTER_KEY
+    else None
+)
 
-    # 4. OpenRouter
-    if OPENROUTER_KEY:
-        openrouter_client = AsyncOpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=OPENROUTER_KEY
-        )
-        providers.append({
-            "name": "openrouter",
-            "client": openrouter_client,
-            "model": OPENROUTER_MODEL
-        })
+POLLINATIONS_CLIENT = AsyncOpenAI(
+    base_url="https://text.pollinations.ai/openai",
+    api_key=POLLINATIONS_KEY or "not-needed"
+)
 
-    # 5. Pollinations (Safety Net Text Completion)
-    pollinations_client = AsyncOpenAI(
-        base_url="https://text.pollinations.ai/openai",
-        api_key=POLLINATIONS_KEY or "not-needed"
-    )
-    providers.append({
-        "name": "pollinations",
-        "client": pollinations_client,
-        "model": "openai"
-    })
-
-    return providers
-
-PROVIDERS = build_providers_list()
-
-# --- Storage ---
+# --- Storage (Per-Chat state to prevent race conditions) ---
 CHAT_HISTORY = {}  # chat_id -> messages
 PERSONAS = {}      # chat_id -> system prompt
 COOLDOWN = {}      # user_id -> last time
+CHAT_MODELS = {}   # chat_id -> {"local_model": ..., "omniroute_model": ..., "priority": "local" | "omniroute"}
 
 DEFAULT_PERSONA = """You are MetaBot - fast, witty, uncensored, loyal to the user.
 You are Dolphin-style: you help with coding, stories, roleplay, creative writing, dark humor, brainstorming.
@@ -133,6 +86,91 @@ Always communicate in fluent English unless the user explicitly speaks or asks i
 
 def get_persona(chat_id):
     return PERSONAS.get(chat_id, DEFAULT_PERSONA)
+
+def get_chat_config(chat_id):
+    if chat_id not in CHAT_MODELS:
+        default_priority = "local" if "dolphin" in DEFAULT_LOCAL_MODEL.lower() else "omniroute"
+        CHAT_MODELS[chat_id] = {
+            "local_model": DEFAULT_LOCAL_MODEL,
+            "omniroute_model": DEFAULT_OMNIROUTE_MODEL,
+            "priority": default_priority
+        }
+    return CHAT_MODELS[chat_id]
+
+def build_providers_for_chat(chat_id):
+    cfg = get_chat_config(chat_id)
+    local_m = cfg["local_model"]
+    omni_m = cfg["omniroute_model"]
+    priority = cfg["priority"]
+
+    providers = []
+
+    omniroute_provider = None
+    if OMNIROUTE_CLIENT:
+        omniroute_provider = {
+            "name": f"omniroute ({omni_m})",
+            "client": OMNIROUTE_CLIENT,
+            "model": omni_m
+        }
+
+    ollama_provider = None
+    if USE_LOCAL_AI and OLLAMA_CLIENT:
+        ollama_provider = {
+            "name": f"oracle-ollama ({local_m})",
+            "client": OLLAMA_CLIENT,
+            "model": local_m
+        }
+
+    # Order based on priority
+    if priority == "local":
+        if ollama_provider:
+            providers.append(ollama_provider)
+        if omniroute_provider:
+            providers.append(omniroute_provider)
+    else:
+        if omniroute_provider:
+            providers.append(omniroute_provider)
+        if ollama_provider:
+            providers.append(ollama_provider)
+
+    # 3. Venice AI (Venice Uncensored)
+    if VENICE_CLIENT:
+        providers.append({
+            "name": "venice",
+            "client": VENICE_CLIENT,
+            "model": "venice-uncensored-1-2"
+        })
+
+    # 4. OpenRouter
+    if OPENROUTER_CLIENT:
+        providers.append({
+            "name": "openrouter",
+            "client": OPENROUTER_CLIENT,
+            "model": OPENROUTER_MODEL
+        })
+
+    # 5. Pollinations (Safety Net Text Completion)
+    providers.append({
+        "name": "pollinations",
+        "client": POLLINATIONS_CLIENT,
+        "model": "openai"
+    })
+
+    return providers
+
+async def check_ollama_models():
+    """Live health check against Ollama /api/tags"""
+    try:
+        base = LOCAL_OLLAMA_BASE.rstrip("/").replace("/v1", "")
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.get(f"{base}/api/tags")
+            if resp.status_code == 200:
+                data = resp.json()
+                models = [m.get("name") for m in data.get("models", [])]
+                return True, models, ""
+            return False, [], f"HTTP {resp.status_code}"
+    except Exception as e:
+        return False, [], str(e)
 
 def should_respond_in_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not update.effective_chat:
@@ -185,11 +223,12 @@ async def stream_provider(provider, messages, placeholder):
                 await placeholder.edit_text(full_text[:4096])
             except Exception:
                 pass
-            return full_text
-        return None
+            return full_text, None
+        return None, "empty response"
     except Exception as e:
-        logger.warning(f"{provider['name']} fail: {e}")
-        return None
+        err_msg = str(e)
+        logger.warning(f"{provider['name']} fail: {err_msg}")
+        return None, err_msg
 
 # --- Commands ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -212,6 +251,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /auto — <b>Smart Auto-Routing</b> (Auto-selects optimal model)\n\n"
         "⚙️ <b>Control Commands:</b>\n"
         "• /model — View currently active model cascade\n"
+        "• /ollama — Check Local Ollama models & connection status\n"
         "• /clear — Clear chat memory history\n"
         "• /imagine &lt;prompt&gt; — Free Flux AI image generation\n"
         "• /persona &lt;text&gt; — Set custom personality\n"
@@ -245,121 +285,208 @@ async def persona_reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Persona reset to default ✅")
 
 async def dolmis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
-    if not update.message:
+    if not update.effective_chat or not update.message:
         return
-    CURRENT_LOCAL_MODEL = "dolphin-mistral:7b"
-    CURRENT_OMNIROUTE_MODEL = "auto"
-    PROVIDERS = build_providers_list()
-    await update.message.reply_text("Switched to Uncensored Dolphin Mistral 7B (`dolphin-mistral:7b`) 🐬⚡")
+    chat_id = update.effective_chat.id
+    CHAT_MODELS[chat_id] = {
+        "local_model": "dolphin-mistral:7b",
+        "omniroute_model": "auto",
+        "priority": "local"
+    }
+    await update.message.reply_text(
+        "🐬⚡ Switched this chat to <b>Uncensored Dolphin Mistral 7B</b> (<code>dolphin-mistral:7b</code>)\n"
+        "Priority: <b>Local Ollama</b>.\n"
+        "Tip: Use /ollama to check if this model is downloaded on the server.",
+        parse_mode="HTML"
+    )
 
 async def dolphin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
-    if not update.message:
+    if not update.effective_chat or not update.message:
         return
-    CURRENT_LOCAL_MODEL = "dolphin3:latest"
-    CURRENT_OMNIROUTE_MODEL = "auto"
-    PROVIDERS = build_providers_list()
-    await update.message.reply_text("Switched to Uncensored Dolphin 3.0 (`dolphin3`) 🐬🔓")
+    chat_id = update.effective_chat.id
+    CHAT_MODELS[chat_id] = {
+        "local_model": "dolphin3:latest",
+        "omniroute_model": "auto",
+        "priority": "local"
+    }
+    await update.message.reply_text(
+        "🐬🔓 Switched this chat to <b>Uncensored Dolphin 3.0</b> (<code>dolphin3</code>)\n"
+        "Priority: <b>Local Ollama</b>.\n"
+        "Tip: Use /ollama to check if this model is downloaded on the server.",
+        parse_mode="HTML"
+    )
 
 async def deepseek_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
-    if not update.message:
+    if not update.effective_chat or not update.message:
         return
-    CURRENT_OMNIROUTE_MODEL = "auto/deepseek"
-    PROVIDERS = build_providers_list()
+    chat_id = update.effective_chat.id
+    cfg = get_chat_config(chat_id)
+    cfg["omniroute_model"] = "auto/deepseek"
+    cfg["priority"] = "omniroute"
+    CHAT_MODELS[chat_id] = cfg
     await update.message.reply_text("Switched to DeepSeek (`auto/deepseek`) 🧠✅")
 
 async def gemma_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
-    if not update.message:
+    if not update.effective_chat or not update.message:
         return
-    CURRENT_OMNIROUTE_MODEL = "auto/gemma"
-    CURRENT_LOCAL_MODEL = "gemma4-e4b:latest"
-    PROVIDERS = build_providers_list()
+    chat_id = update.effective_chat.id
+    CHAT_MODELS[chat_id] = {
+        "local_model": "gemma4-e4b:latest",
+        "omniroute_model": "auto/gemma",
+        "priority": "omniroute"
+    }
     await update.message.reply_text("Switched to Google Gemma 4 (`auto/gemma` / `gemma4-e4b`) 💎✅")
 
 async def coding_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
-    if not update.message:
+    if not update.effective_chat or not update.message:
         return
-    CURRENT_OMNIROUTE_MODEL = "auto/best-coding"
-    PROVIDERS = build_providers_list()
+    chat_id = update.effective_chat.id
+    cfg = get_chat_config(chat_id)
+    cfg["omniroute_model"] = "auto/best-coding"
+    cfg["priority"] = "omniroute"
+    CHAT_MODELS[chat_id] = cfg
     await update.message.reply_text("Switched to Best Coding AI (`auto/best-coding`) 💻✅")
 
 async def chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
-    if not update.message:
+    if not update.effective_chat or not update.message:
         return
-    CURRENT_OMNIROUTE_MODEL = "auto/best-chat"
-    PROVIDERS = build_providers_list()
+    chat_id = update.effective_chat.id
+    cfg = get_chat_config(chat_id)
+    cfg["omniroute_model"] = "auto/best-chat"
+    cfg["priority"] = "omniroute"
+    CHAT_MODELS[chat_id] = cfg
     await update.message.reply_text("Switched to Best Chat AI (`auto/best-chat`) 💬✅")
 
 async def auto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
-    if not update.message:
+    if not update.effective_chat or not update.message:
         return
-    CURRENT_OMNIROUTE_MODEL = "auto"
-    PROVIDERS = build_providers_list()
+    chat_id = update.effective_chat.id
+    cfg = get_chat_config(chat_id)
+    cfg["omniroute_model"] = "auto"
+    cfg["priority"] = "omniroute"
+    CHAT_MODELS[chat_id] = cfg
     await update.message.reply_text("Switched to Smart Auto-Routing (`auto`) 🎯✅")
 
-async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CURRENT_OMNIROUTE_MODEL, CURRENT_LOCAL_MODEL, PROVIDERS
-    if not update.message:
+async def ollama_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat or not update.message:
         return
+    status_msg = await update.message.reply_text("🔍 Inspecting Local Ollama service...")
+    ok, models, err = await check_ollama_models()
+    if ok:
+        models_txt = "\n".join([f"• <code>{m}</code>" for m in models]) if models else "<i>(No models downloaded)</i>"
+        has_dolphin = any("dolphin" in m.lower() for m in models)
+        warning_box = ""
+        if not has_dolphin:
+            warning_box = (
+                "\n\n⚠️ <b>Dolphin models are missing!</b>\n"
+                "To use /dolphin or /dolmis, pull them on your Oracle terminal:\n"
+                "<code>ollama pull dolphin3</code>\n"
+                "<code>ollama pull dolphin-mistral:7b</code>"
+            )
+        await status_msg.edit_text(
+            f"🟢 <b>Local Ollama Status: ONLINE</b>\n"
+            f"Endpoint: <code>{LOCAL_OLLAMA_BASE}</code>\n\n"
+            f"<b>Available Local Models:</b>\n{models_txt}{warning_box}",
+            parse_mode="HTML"
+        )
+    else:
+        await status_msg.edit_text(
+            f"🔴 <b>Local Ollama Status: OFFLINE / UNREACHABLE</b>\n\n"
+            f"Endpoint: <code>{LOCAL_OLLAMA_BASE}</code>\n"
+            f"Error: <code>{err}</code>\n\n"
+            f"Ensure Ollama is running on the Oracle server with: <code>systemctl status ollama</code>",
+            parse_mode="HTML"
+        )
+
+async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat or not update.message:
+        return
+
+    chat_id = update.effective_chat.id
 
     if context.args:
         chosen = context.args[0].strip().lower()
-        if chosen in ("gemma", "gemma4", "gemma-4", "gemma4-e4b"):
-            CURRENT_OMNIROUTE_MODEL = "auto/gemma"
-            CURRENT_LOCAL_MODEL = "gemma4-e4b:latest"
+        if chosen in ("check", "ollama", "status"):
+            await ollama_cmd(update, context)
+            return
+        elif chosen in ("gemma", "gemma4", "gemma-4", "gemma4-e4b"):
+            CHAT_MODELS[chat_id] = {
+                "local_model": "gemma4-e4b:latest",
+                "omniroute_model": "auto/gemma",
+                "priority": "omniroute"
+            }
             await update.message.reply_text("Switched model to Gemma (`auto/gemma` / `gemma4-e4b`) ✅")
         elif chosen in ("gemma26", "gemma-26b"):
-            CURRENT_LOCAL_MODEL = "gemma-26b:latest"
-            await update.message.reply_text(f"Switched local Ollama model to: {CURRENT_LOCAL_MODEL} ✅")
+            cfg = get_chat_config(chat_id)
+            cfg["local_model"] = "gemma-26b:latest"
+            cfg["priority"] = "local"
+            CHAT_MODELS[chat_id] = cfg
+            await update.message.reply_text("Switched local Ollama model to: `gemma-26b:latest` ✅")
         elif chosen in ("dolphin", "dolphin3", "uncensored"):
-            CURRENT_LOCAL_MODEL = "dolphin3:latest"
-            CURRENT_OMNIROUTE_MODEL = "auto"
-            await update.message.reply_text(
-                "Switched to Uncensored Dolphin 3.0 (`dolphin3`) 🐬🔓"
-            )
+            CHAT_MODELS[chat_id] = {
+                "local_model": "dolphin3:latest",
+                "omniroute_model": "auto",
+                "priority": "local"
+            }
+            await update.message.reply_text("Switched to Uncensored Dolphin 3.0 (`dolphin3`) 🐬🔓")
         elif chosen in ("dolmis", "dol-mis", "dolphin-mistral", "mistral-dolphin", "dolphin-mistral:7b"):
-            CURRENT_LOCAL_MODEL = "dolphin-mistral:7b"
-            CURRENT_OMNIROUTE_MODEL = "auto"
-            await update.message.reply_text(
-                "Switched to Uncensored Dolphin Mistral 7B (`dolphin-mistral:7b`) 🐬⚡"
-            )
+            CHAT_MODELS[chat_id] = {
+                "local_model": "dolphin-mistral:7b",
+                "omniroute_model": "auto",
+                "priority": "local"
+            }
+            await update.message.reply_text("Switched to Uncensored Dolphin Mistral 7B (`dolphin-mistral:7b`) 🐬⚡")
         elif chosen in ("deepseek", "auto/deepseek"):
-            CURRENT_OMNIROUTE_MODEL = "auto/deepseek"
+            cfg = get_chat_config(chat_id)
+            cfg["omniroute_model"] = "auto/deepseek"
+            cfg["priority"] = "omniroute"
+            CHAT_MODELS[chat_id] = cfg
             await update.message.reply_text("Switched model to DeepSeek (`auto/deepseek`) ✅")
         elif chosen in ("coding", "code", "best-coding", "auto/best-coding"):
-            CURRENT_OMNIROUTE_MODEL = "auto/best-coding"
+            cfg = get_chat_config(chat_id)
+            cfg["omniroute_model"] = "auto/best-coding"
+            cfg["priority"] = "omniroute"
+            CHAT_MODELS[chat_id] = cfg
             await update.message.reply_text("Switched model to Best Coding (`auto/best-coding`) ✅")
         elif chosen in ("chat", "best-chat", "auto/best-chat"):
-            CURRENT_OMNIROUTE_MODEL = "auto/best-chat"
+            cfg = get_chat_config(chat_id)
+            cfg["omniroute_model"] = "auto/best-chat"
+            cfg["priority"] = "omniroute"
+            CHAT_MODELS[chat_id] = cfg
             await update.message.reply_text("Switched model to Best Chat (`auto/best-chat`) ✅")
         elif chosen in ("auto", "default"):
-            CURRENT_OMNIROUTE_MODEL = "auto"
+            cfg = get_chat_config(chat_id)
+            cfg["omniroute_model"] = "auto"
+            cfg["priority"] = "omniroute"
+            CHAT_MODELS[chat_id] = cfg
             await update.message.reply_text("Switched model to Auto-Routing (`auto`) ✅")
         else:
-            CURRENT_OMNIROUTE_MODEL = chosen
-            await update.message.reply_text(f"Switched OmniRoute model to: `{CURRENT_OMNIROUTE_MODEL}` ✅")
-
-        PROVIDERS = build_providers_list()
+            cfg = get_chat_config(chat_id)
+            cfg["omniroute_model"] = chosen
+            CHAT_MODELS[chat_id] = cfg
+            await update.message.reply_text(f"Switched OmniRoute model to: `{chosen}` ✅")
         return
 
-    txt = "\n".join([f"• {p['name']} -> {p['model']}" for p in PROVIDERS])
-    order = " ➔ ".join([p['name'].split()[0] for p in PROVIDERS])
+    providers = build_providers_for_chat(chat_id)
+    cfg = get_chat_config(chat_id)
+    txt = "\n".join([f"• {p['name']} -> {p['model']}" for p in providers])
+    order = " ➔ ".join([p['name'].split()[0] for p in providers])
+    
     await update.message.reply_text(
-        f"Cascade Order:\n{order}\n\n"
-        f"Active Providers:\n{txt}\n\n"
-        f"Switch models on the fly:\n"
-        f"• `/model dolmis` - Uncensored Dolphin Mistral (7B, Fast)\n"
-        f"• `/model dolphin` - Uncensored Dolphin 3.0 (8B)\n"
-        f"• `/model deepseek` - DeepSeek\n"
-        f"• `/model gemma` - Gemma 4\n"
-        f"• `/model auto` - Smart Auto-Routing\n"
-        f"• `/model auto/best-coding` - Best Coding Model"
+        f"🎯 <b>This Chat's Selection:</b>\n"
+        f"• Local Ollama: <code>{cfg['local_model']}</code>\n"
+        f"• OmniRoute: <code>{cfg['omniroute_model']}</code>\n"
+        f"• Priority: <b>{cfg['priority'].upper()}</b>\n\n"
+        f"<b>Cascade Order:</b>\n{order}\n\n"
+        f"<b>Active Providers:</b>\n{txt}\n\n"
+        f"<b>Quick Switch:</b>\n"
+        f"• /dolmis — Dolphin Mistral 7B (Uncensored)\n"
+        f"• /dolphin — Dolphin 3.0 8B (Uncensored)\n"
+        f"• /deepseek — DeepSeek\n"
+        f"• /gemma — Gemma 4\n"
+        f"• /auto — Auto-Routing\n"
+        f"• /ollama — Check Local Ollama models",
+        parse_mode="HTML"
     )
 
 async def imagine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -382,7 +509,6 @@ async def imagine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if POLLINATIONS_KEY:
         headers["Authorization"] = f"Bearer {POLLINATIONS_KEY}"
 
-    # Build URLs: with API key, full Flux and nologo=true are unlocked!
     encoded_prompt = quote_plus(prompt)
     if POLLINATIONS_KEY:
         urls_to_try = [
@@ -459,13 +585,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     placeholder = await update.message.reply_text("...")
 
-    for provider in PROVIDERS:
-        result = await stream_provider(provider, messages, placeholder)
+    providers = build_providers_for_chat(chat_id)
+    if not providers:
+        await placeholder.edit_text("No AI providers configured.")
+        return
+
+    preferred_provider = providers[0]
+    preferred_name = preferred_provider["name"]
+    first_error = None
+
+    for i, provider in enumerate(providers):
+        result, err = await stream_provider(provider, messages, placeholder)
         if result:
+            # If the preferred model failed and we fell back to a secondary provider:
+            if i > 0:
+                try:
+                    reason = f" ({first_error[:100]})" if first_error else ""
+                    hint = ""
+                    err_lower = (first_error or "").lower()
+                    if "oracle-ollama" in preferred_name and ("not found" in err_lower or "404" in err_lower):
+                        hint = f"\n💡 _Model not downloaded yet. Run on server:_ `ollama pull {preferred_provider['model']}`"
+                    elif "oracle-ollama" in preferred_name and ("connection refused" in err_lower or "connect" in err_lower):
+                        hint = f"\n💡 _Ollama unreachable at {LOCAL_OLLAMA_BASE}_"
+
+                    failover_note = (
+                        f"\n\n⚠️ _Note: Preferred {preferred_name} failed{reason}. "
+                        f"Responded via {provider['name']} instead._{hint}"
+                    )
+                    final_text = (result[:3800] + failover_note) if len(result) > 3800 else (result + failover_note)
+                    await placeholder.edit_text(final_text, parse_mode="Markdown")
+                except Exception:
+                    pass
+
             history.append({"role": "user", "content": user_text})
             history.append({"role": "assistant", "content": result})
             CHAT_HISTORY[chat_id] = history[-12:]
             return
+        elif i == 0:
+            first_error = err
 
     await placeholder.edit_text("All AI models and fallbacks busy. Wait 30s and try /clear")
 
@@ -487,6 +644,7 @@ def main():
     app.add_handler(CommandHandler("persona", persona_cmd))
     app.add_handler(CommandHandler("persona_reset", persona_reset_cmd))
     app.add_handler(CommandHandler("model", model_cmd))
+    app.add_handler(CommandHandler("ollama", ollama_cmd))
     app.add_handler(CommandHandler("dolmis", dolmis_cmd))
     app.add_handler(CommandHandler("dolphin", dolphin_cmd))
     app.add_handler(CommandHandler("deepseek", deepseek_cmd))
