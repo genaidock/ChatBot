@@ -33,10 +33,14 @@ echo ""
 echo "--- Stopping telegram-bot service ---"
 sudo systemctl stop telegram-bot || true
 
-# 3. Create backup of current bot.py
+# 3. Create backup of current bot.py and state
 if [ -f "$BOT_DIR/bot.py" ]; then
     cp "$BOT_DIR/bot.py" "$BOT_DIR/bot.py.bak.$(date +%F_%T)"
     echo "Backup created at bot.py.bak.*"
+fi
+if [ -f "$BOT_DIR/bot_persistence.pickle" ]; then
+    cp "$BOT_DIR/bot_persistence.pickle" "$BOT_DIR/bot_persistence.pickle.bak.$(date +%F_%T)"
+    echo "State backup created at bot_persistence.pickle.bak.*"
 fi
 
 # 4. Fetch latest bot.py and requirements

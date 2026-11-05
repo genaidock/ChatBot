@@ -4,24 +4,39 @@ A Telegram chatbot featuring multi-provider streaming fallbacks, uncensored Dolp
 
 ## Key Features
 
+- **Interactive Inline UI**: Dynamic model selection dashboard and priority toggles with Inline Keyboards & Callback Queries (`/model`, `/start`).
+- **Persistent State Across Restarts**: Preserves chat memory, selected models, and custom personas using `PicklePersistence` across systemd restarts and redeployments.
+- **Auto-registered Command Autocompletion**: Auto-registers the bot command catalog via Telegram's `set_my_commands` API during startup (`post_init`).
+- **Telegram Rate-Limiting Protection**: Integrates `AIORateLimiter` to protect against HTTP 429 Flood Wait rate limits during streaming.
+- **Continuous Typing Indicators**: Active typing indicator keeps users informed during long Ollama cold starts.
+- **Safe Markdown Rendering**: Resilient entity parser that automatically falls back to raw text if an LLM produces unclosed Markdown symbols.
 - **Multi-Provider Fallback Cascade:**
-  1. **Venice AI**: `dolphin-mistral-24b-venice-edition`
-  2. **OpenRouter**: `cognitivecomputations/dolphin-mistral-24b-venice-edition:free`
-  3. **Pollinations.ai**: `openai` (100% free fallback, no API key required)
-- **Real-Time Streaming Responses:** Smooth streamed output with live typing indicators.
+  1. **OmniRoute Gateway / Local Ollama (Oracle VPS)**
+  2. **Venice AI**: Uncensored cloud models
+  3. **OpenRouter**: High-performance reasoning models
+  4. **Pollinations.ai**: `openai` (100% free safety net fallback)
+- **Real-Time Streaming Responses:** Smooth streamed output with live edit throttle.
 - **Custom Personas:** Set any custom persona on the fly per chat (`/persona <prompt>`), or reset to default MetaBot (`/persona_reset`).
-- **AI Image Generation:** Free, high-quality 1024x1024 Flux image generation via `/imagine <prompt>`.
+- **AI Image Generation:** Free, high-quality Flux image generation via `/imagine <prompt>`.
 - **Group & Private Chat Support:** Works automatically in private messages; responds in groups when @mentioned, replied to, or on commands.
-- **Dual Polling & Webhook Support:** Seamless local development with polling; automatic webhook mode for 24/7 cloud hosting on platforms like Render.
+- **Dual Polling & Webhook Support:** Seamless local/systemd development with polling; automatic webhook mode for 24/7 cloud hosting on platforms like Render.
 
 ## Bot Commands
 
-- `/start` - Welcome message and command list
-- `/clear` - Clear chat context memory
+- `/start` - Interactive welcome dashboard and menu
+- `/model` - Interactive model dashboard and cascade switcher
+- `/ollama` - Check local Ollama status & downloaded models
+- `/imagine <prompt>` - Generate an image using Flux AI
+- `/clear` - Reset chat context memory
 - `/persona <text>` - Set a custom personality for this chat
 - `/persona_reset` - Reset persona back to default MetaBot
-- `/model` - Display active providers and priority cascade
-- `/imagine <prompt>` - Generate an image using Flux
+- `/auto` - Smart auto-routing
+- `/deepseek` - Switch to DeepSeek
+- `/coding` - Switch to Best Coding AI
+- `/chat` - Switch to Best Chat AI
+- `/dolphin` - Switch to Dolphin 3.0 (Uncensored)
+- `/dolmis` - Switch to Dolphin Mistral 7B (Uncensored)
+- `/gemma` - Switch to Google Gemma 4
 
 ## Setup Instructions
 

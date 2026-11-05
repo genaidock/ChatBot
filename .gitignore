@@ -2,3 +2,7 @@
 .agents/
 __pycache__/
 *.pyc
+*.pickle
+*.bak*
+venv/
+
