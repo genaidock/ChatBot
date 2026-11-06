@@ -371,6 +371,10 @@ def build_start_keyboard():
         ],
         [
             InlineKeyboardButton("🎨 Imagine Image", switch_inline_query_current_chat="/imagine "),
+            InlineKeyboardButton("🖼️ Edit Image", switch_inline_query_current_chat="/edit "),
+        ],
+        [
+            InlineKeyboardButton("🔍 Web Search", switch_inline_query_current_chat="/search "),
             InlineKeyboardButton("🧹 Clear Memory", callback_data="act:clear"),
         ]
     ])
@@ -472,6 +476,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /ollama — Check Local Ollama models & connection status\n"
         "• /clear — Clear chat memory history\n"
         "• /imagine &lt;prompt&gt; — Free Flux AI image generation\n"
+        "• /edit &lt;prompt&gt; — Reply to any photo to edit/transform with AI\n"
+        "• /search &lt;query&gt; — Real-time web search with AI summary\n"
         "• /persona &lt;text&gt; — Set custom personality\n"
         "• /persona_reset — Reset persona to default"
     )
@@ -780,10 +786,120 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             status_text = f"Ollama is OFFLINE 🔴 ({err[:40]})"
         await query.answer(status_text, show_alert=True)
 
-# --- Flux AI Image Generation ---
+# --- Flux AI Image Generation & Editing ---
+async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat or not update.message:
+        return
+
+    # Check for photo in reply or in the current message
+    target_photo = None
+    if update.message.reply_to_message and update.message.reply_to_message.photo:
+        target_photo = update.message.reply_to_message.photo[-1]
+    elif update.message.photo:
+        target_photo = update.message.photo[-1]
+
+    if not target_photo:
+        await update.message.reply_text(
+            "🖼️ <b>How to Edit / Transform Images:</b>\n\n"
+            "1. Reply to any photo in this chat.\n"
+            "2. Type: <code>/edit &lt;your transformation instructions&gt;</code>\n\n"
+            "<b>Examples:</b>\n"
+            "• <code>/edit cyberpunk theme with glowing neon lights</code>\n"
+            "• <code>/edit turn into anime studio ghibli style</code>\n"
+            "• <code>/edit vintage 80s oil painting</code>\n"
+            "• <code>/edit add stylish sunglasses and leather jacket</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    prompt = " ".join(context.args) if context.args else ""
+    if not prompt and update.message.caption:
+        caption_text = update.message.caption
+        for cmd in ["/edit", "/imagine"]:
+            if caption_text.startswith(cmd):
+                caption_text = caption_text[len(cmd):].strip()
+        prompt = caption_text
+
+    if not prompt:
+        await update.message.reply_text(
+            "Please provide instructions for the edit.\nExample: <code>/edit turn into anime style</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    status_msg = await update.message.reply_text("🎨 Editing image with Flux AI, please wait...")
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=constants.ChatAction.UPLOAD_PHOTO)
+
+    try:
+        file_obj = await context.bot.get_file(target_photo.file_id)
+        source_url = file_obj.file_path
+    except Exception as e:
+        logger.error(f"Failed to get file from Telegram: {e}")
+        await safe_edit_message(status_msg, f"❌ Failed to retrieve image from Telegram: {e}")
+        return
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "image/*,*/*;q=0.8"
+    }
+    if POLLINATIONS_KEY:
+        headers["Authorization"] = f"Bearer {POLLINATIONS_KEY}"
+
+    encoded_prompt = quote_plus(prompt)
+    encoded_img = quote_plus(source_url)
+    urls_to_try = [
+        f"https://image.pollinations.ai/prompt/{encoded_prompt}?image={encoded_img}&model=flux&width=1024&height=1024&nologo=true",
+        f"https://image.pollinations.ai/prompt/{encoded_prompt}?image={encoded_img}&model=flux",
+        f"https://image.pollinations.ai/prompt/{encoded_prompt}?image={encoded_img}"
+    ]
+
+    image_bytes = None
+    last_err = ""
+
+    for url in urls_to_try:
+        try:
+            async with httpx.AsyncClient(timeout=60.0, headers=headers) as client:
+                resp = await client.get(url, follow_redirects=True)
+                content_type = resp.headers.get("content-type", "")
+                if resp.status_code == 200 and resp.content and ("image" in content_type or resp.content[:2] == b"\xff\xd8"):
+                    image_bytes = resp.content
+                    break
+                else:
+                    last_err = f"Status {resp.status_code}"
+        except Exception as e:
+            last_err = str(e)
+            logger.warning(f"Pollinations edit failed: {e}")
+
+    if image_bytes:
+        try:
+            caption_text = f"🎨 <b>Edited:</b> {html.escape(prompt[:900])}"
+            await update.message.reply_photo(
+                photo=image_bytes,
+                filename="edited.jpg",
+                caption=caption_text,
+                parse_mode="HTML",
+                write_timeout=60.0
+            )
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+            return
+        except Exception as e:
+            logger.error(f"Failed to send edited photo: {e}")
+            await safe_edit_message(status_msg, f"❌ Telegram upload error: {e}")
+    else:
+        await safe_edit_message(status_msg, f"❌ Failed to edit image ({last_err or 'Service busy'}). Please try again.")
+
 async def imagine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_chat or not update.message:
         return
+
+    # If user replied to a photo, seamlessly treat as image edit
+    if update.message.reply_to_message and update.message.reply_to_message.photo:
+        await edit_cmd(update, context)
+        return
+
     prompt = " ".join(context.args) if context.args else ""
     if not prompt and update.message.reply_to_message and update.message.reply_to_message.text:
         prompt = update.message.reply_to_message.text
@@ -850,6 +966,64 @@ async def imagine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await safe_edit_message(status_msg, f"❌ Failed to generate image ({last_err or 'Service busy'}). Please try again.")
 
+# --- Real-Time Web Search Engine (DuckDuckGo Lite) ---
+async def perform_web_search(query: str, max_results: int = 4) -> list:
+    """Fetches real-time search snippets from DuckDuckGo Lite without API keys."""
+    try:
+        import re
+        data = {"q": query}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        }
+        async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
+            resp = await client.post("https://lite.duckduckgo.com/lite/", data=data)
+            if resp.status_code == 200:
+                raw_snippets = re.findall(r'<td[^>]*class=[\'"]?result-snippet[\'"]?[^>]*>(.*?)</td>', resp.text, re.IGNORECASE | re.DOTALL)
+                snippets = []
+                for s in raw_snippets[:max_results]:
+                    clean = re.sub(r'<[^>]+>', '', s).strip()
+                    clean = html.unescape(clean)
+                    if clean and clean not in snippets:
+                        snippets.append(clean)
+                return snippets
+    except Exception as e:
+        logger.debug(f"Web search failed: {e}")
+    return []
+
+async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat or not update.message:
+        return
+    query = " ".join(context.args) if context.args else ""
+    if not query:
+        await update.message.reply_text("Use: /search <query>\nExample: <code>/search latest tech news today</code>", parse_mode="HTML")
+        return
+
+    status_msg = await update.message.reply_text(f"🔍 Searching the web for: <i>{html.escape(query)}</i>...", parse_mode="HTML")
+    snippets = await perform_web_search(query)
+    if not snippets:
+        await safe_edit_message(status_msg, "❌ Could not retrieve web search results. Please try again.")
+        return
+
+    context_text = "\n\n".join([f"[{i+1}] {s}" for i, s in enumerate(snippets)])
+    system_prompt = (
+        "You are MetaBot. Synthesize the provided live web search results accurately, concisely, and helpfully. "
+        "Cite the relevant information clearly."
+    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Query: {query}\n\nLive Web Search Results:\n{context_text}\n\nPlease summarize and answer the query accurately using the search results above."}
+    ]
+
+    providers = build_providers_for_chat(update.effective_chat.id, context)
+    for provider in providers:
+        res, err = await stream_provider(provider, messages, status_msg)
+        if res:
+            return
+
+    # Fallback to direct snippet display if streaming fails
+    bullets = "\n\n".join([f"• {s}" for s in snippets])
+    await safe_edit_message(status_msg, f"🔍 <b>Web Search Results for:</b> <i>{html.escape(query)}</i>\n\n{html.escape(bullets)}", parse_mode="HTML")
+
 # --- Chat Message Handler ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_chat or not update.effective_user or not update.message:
@@ -875,6 +1049,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history = get_chat_history(chat_id, context)[-10:]
     system_msg = {"role": "system", "content": get_persona(chat_id, context)}
     messages = [system_msg] + history + [{"role": "user", "content": user_text}]
+
+    # If priority is local and user asks for live web/search info, inject live search context
+    cfg = get_chat_config(chat_id, context)
+    if cfg.get("priority") == "local":
+        q_lower = user_text.lower()
+        search_triggers = ["search the web", "search for", "today's weather", "weather today", "latest news", "current date", "what happened today", "who won"]
+        if any(trig in q_lower for trig in search_triggers):
+            snippets = await perform_web_search(user_text)
+            if snippets:
+                search_block = "\n".join([f"• {s}" for s in snippets[:3]])
+                messages.insert(-1, {
+                    "role": "system",
+                    "content": f"Live Web Search Context:\n{search_block}\nUse this live information to answer accurately."
+                })
 
     placeholder = await update.message.reply_text("...")
 
@@ -940,6 +1128,8 @@ async def post_init(application):
         BotCommand("start", "Interactive dashboard & welcome menu"),
         BotCommand("model", "Interactive AI model picker"),
         BotCommand("imagine", "Generate Flux AI image"),
+        BotCommand("edit", "Edit/transform replied photo with AI"),
+        BotCommand("search", "Live web search & AI summary"),
         BotCommand("ollama", "Inspect local Ollama models"),
         BotCommand("clear", "Reset conversation memory"),
         BotCommand("persona", "View or set custom personality"),
@@ -1010,6 +1200,8 @@ def main():
     app.add_handler(CommandHandler("chat", chat_cmd))
     app.add_handler(CommandHandler("auto", auto_cmd))
     app.add_handler(CommandHandler("imagine", imagine_cmd))
+    app.add_handler(CommandHandler("edit", edit_cmd))
+    app.add_handler(CommandHandler("search", search_cmd))
 
     # Callback Query Handler for Interactive UI Buttons
     app.add_handler(CallbackQueryHandler(handle_callback_query))

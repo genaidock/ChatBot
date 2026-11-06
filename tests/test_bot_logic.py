@@ -146,9 +146,13 @@ class TestBotLogic(unittest.TestCase):
         kb = bot.build_start_keyboard()
         buttons = [b for row in kb.inline_keyboard for b in row]
         callback_data = [b.callback_data for b in buttons if b.callback_data]
+        switch_inline = [b.switch_inline_query_current_chat for b in buttons if b.switch_inline_query_current_chat]
         self.assertIn("act:open_model", callback_data)
         self.assertIn("act:ollama", callback_data)
         self.assertIn("act:clear", callback_data)
+        self.assertIn("/imagine ", switch_inline)
+        self.assertIn("/edit ", switch_inline)
+        self.assertIn("/search ", switch_inline)
 
     async def _async_safe_edit_test(self):
         # 1. Normal edit success

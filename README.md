@@ -27,6 +27,8 @@ A Telegram chatbot featuring multi-provider streaming fallbacks, uncensored Dolp
 - `/model` - Interactive model dashboard and cascade switcher
 - `/ollama` - Check local Ollama status & downloaded models
 - `/imagine <prompt>` - Generate an image using Flux AI
+- `/edit <prompt>` - Reply to any photo to transform/edit with AI (Img2Img)
+- `/search <query>` - Live web search with AI synthesized answer
 - `/clear` - Reset chat context memory
 - `/persona <text>` - Set a custom personality for this chat
 - `/persona_reset` - Reset persona back to default MetaBot
