@@ -4,6 +4,7 @@ import time
 import asyncio
 import logging
 import html
+import re
 import httpx
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
@@ -375,6 +376,9 @@ def build_start_keyboard():
         ],
         [
             InlineKeyboardButton("🔍 Web Search", switch_inline_query_current_chat="/search "),
+            InlineKeyboardButton("🎙️ Speak / TTS", switch_inline_query_current_chat="/speak "),
+        ],
+        [
             InlineKeyboardButton("🧹 Clear Memory", callback_data="act:clear"),
         ]
     ])
@@ -478,6 +482,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /imagine &lt;prompt&gt; — Free Flux AI image generation\n"
         "• /edit &lt;prompt&gt; — Reply to any photo to edit/transform with AI\n"
         "• /search &lt;query&gt; — Real-time web search with AI summary\n"
+        "• /speak &lt;text&gt; — Voice read-aloud via Paradee TTS (or reply to any message)\n"
         "• /persona &lt;text&gt; — Set custom personality\n"
         "• /persona_reset — Reset persona to default"
     )
@@ -1024,6 +1029,247 @@ async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bullets = "\n\n".join([f"• {s}" for s in snippets])
     await safe_edit_message(status_msg, f"🔍 <b>Web Search Results for:</b> <i>{html.escape(query)}</i>\n\n{html.escape(bullets)}", parse_mode="HTML")
 
+# --- Paradee Text-to-Speech (TTS) Engine ---
+VOICE_MAP = {
+    "heart": "af_heart",
+    "af_heart": "af_heart",
+    "puck": "am_puck",
+    "am_puck": "am_puck",
+    "isabella": "bf_isabella",
+    "bf_isabella": "bf_isabella",
+    "fable": "bm_fable",
+    "bm_fable": "bm_fable",
+}
+DEFAULT_VOICE = "af_heart"
+
+_TTS_ENGINE = None
+_TTS_LOCK = None
+
+def get_tts_engine():
+    """Lazily loads and returns the singleton Paradee TTS model instance."""
+    global _TTS_ENGINE, _TTS_LOCK
+    if _TTS_LOCK is None:
+        import threading
+        _TTS_LOCK = threading.Lock()
+
+    with _TTS_LOCK:
+        if _TTS_ENGINE is None:
+            try:
+                from paradee import Paradee
+            except ImportError as e:
+                raise RuntimeError(
+                    "Paradee TTS is not installed. "
+                    "Install with: pip install git+https://github.com/sahilmahendrakar/paradee soundfile"
+                ) from e
+            _TTS_ENGINE = Paradee()
+    return _TTS_ENGINE
+
+def clean_text_for_speech(text: str, max_chars: int = 1000) -> str:
+    """
+    Cleans up markdown, HTML, code blocks, and URLs so the text sounds natural
+    when vocalized by Paradee TTS.
+    """
+    if not text:
+        return ""
+
+    # Replace fenced code blocks with spoken placeholder
+    text = re.sub(r"```[\w]*\n?.*?```", " [code snippet omitted] ", text, flags=re.DOTALL)
+    # Remove inline backticks
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    # Convert markdown links [title](url) -> title
+    text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+    # Strip HTML tags
+    text = re.sub(r"<[^>]+>", " ", text)
+    # Remove raw URLs
+    text = re.sub(r"https?://\S+", "", text)
+    # Strip markdown formatting markers
+    text = re.sub(r"[*_~#]{1,3}", "", text)
+    # Normalize whitespaces
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Gracefully truncate if too long
+    if len(text) > max_chars:
+        cutoff = text[:max_chars].rfind(". ")
+        if cutoff > int(max_chars * 0.7):
+            text = text[:cutoff + 1] + " (truncated)"
+        else:
+            text = text[:max_chars].rsplit(" ", 1)[0] + "... (truncated)"
+
+    return text
+
+def parse_speak_args(args: list[str] | None, reply_to_message=None) -> tuple[str, str]:
+    """
+    Extracts text to synthesize and selected voice from context.args and optional reply_to_message.
+    Returns: (text, voice_key)
+    """
+    args = list(args or [])
+    voice = DEFAULT_VOICE
+
+    filtered_args = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg.startswith("--voice="):
+            v_val = arg.split("=", 1)[1].strip().lower()
+            if v_val in VOICE_MAP:
+                voice = VOICE_MAP[v_val]
+            i += 1
+        elif arg in ("--voice", "-v") and i + 1 < len(args):
+            v_val = args[i + 1].strip().lower()
+            if v_val in VOICE_MAP:
+                voice = VOICE_MAP[v_val]
+            i += 2
+        else:
+            filtered_args.append(arg)
+            i += 1
+
+    # Check if the first remaining argument is a voice alias
+    if filtered_args and filtered_args[0].lower() in VOICE_MAP:
+        voice = VOICE_MAP[filtered_args[0].lower()]
+        filtered_args = filtered_args[1:]
+
+    text = " ".join(filtered_args).strip()
+
+    # If no explicit text was passed, fallback to replied message
+    if not text and reply_to_message:
+        if getattr(reply_to_message, "text", None):
+            text = reply_to_message.text.strip()
+        elif getattr(reply_to_message, "caption", None):
+            text = reply_to_message.caption.strip()
+
+    return text, voice
+
+def synthesize_speech_sync(text: str, voice: str = DEFAULT_VOICE) -> tuple[bytes, str]:
+    """
+    Synchronously synthesizes speech using Paradee and soundfile.
+    Returns (audio_bytes, format_str) where format_str is 'ogg' or 'wav'.
+    """
+    try:
+        import soundfile as sf
+    except ImportError as e:
+        raise RuntimeError(
+            "soundfile is not installed. Install with: pip install soundfile"
+        ) from e
+
+    tts = get_tts_engine()
+    from paradee import SAMPLE_RATE
+
+    audio = tts(text, voice=voice)
+
+    # Try writing OGG first (ideal for Telegram voice messages)
+    try:
+        buf = io.BytesIO()
+        sf.write(buf, audio, SAMPLE_RATE, format="OGG")
+        return buf.getvalue(), "ogg"
+    except Exception:
+        # Fallback to standard WAV format
+        buf = io.BytesIO()
+        sf.write(buf, audio, SAMPLE_RATE, format="WAV")
+        return buf.getvalue(), "wav"
+
+async def speak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Synthesizes speech from user text or replied message using Paradee-8M.
+    Supports voice selection: heart (default), puck, isabella, fable.
+    """
+    if not update.effective_chat or not update.message:
+        return
+
+    chat_id = update.effective_chat.id
+    reply_to = update.message.reply_to_message
+
+    raw_text, voice = parse_speak_args(context.args, reply_to)
+    clean_text = clean_text_for_speech(raw_text)
+
+    if not clean_text:
+        help_msg = (
+            "🎙️ <b>Paradee Text-to-Speech (8M)</b>\n\n"
+            "💬 <b>How to Use:</b>\n"
+            "• <code>/speak &lt;text&gt;</code> — Synthesize and speak text\n"
+            "• Reply to <i>any message</i> with <code>/speak</code> to read it aloud!\n\n"
+            "🗣️ <b>Available Voices:</b>\n"
+            "• <code>heart</code> (af_heart) — American Female (Default)\n"
+            "• <code>puck</code> (am_puck) — American Male\n"
+            "• <code>isabella</code> (bf_isabella) — British Female\n"
+            "• <code>fable</code> (bm_fable) — British Male\n\n"
+            "💡 <b>Examples:</b>\n"
+            "• <code>/speak Hello from Paradee!</code>\n"
+            "• <code>/speak puck Welcome back!</code>\n"
+            "• <code>/speak --voice isabella Good morning.</code>\n"
+            "• Reply to any message with <code>/speak fable</code>"
+        )
+        await update.message.reply_text(help_msg, parse_mode="HTML")
+        return
+
+    status_msg = await update.message.reply_text("🎙️ <i>Synthesizing voice audio with Paradee AI...</i>", parse_mode="HTML")
+
+    # Send recording voice action
+    try:
+        action = getattr(constants.ChatAction, "RECORD_VOICE", constants.ChatAction.TYPING)
+        await context.bot.send_chat_action(chat_id=chat_id, action=action)
+    except Exception:
+        pass
+
+    try:
+        audio_bytes, fmt = await asyncio.to_thread(synthesize_speech_sync, clean_text, voice)
+
+        voice_labels = {
+            "af_heart": "American Female",
+            "am_puck": "American Male",
+            "bf_isabella": "British Female",
+            "bm_fable": "British Male",
+        }
+        voice_label = voice_labels.get(voice, voice)
+
+        snippet = (clean_text[:120] + "...") if len(clean_text) > 120 else clean_text
+        caption = f"🗣️ <i>{html.escape(snippet)}</i>\n\n🎙️ <b>Voice:</b> {voice_label} | <b>Model:</b> Paradee-8M"
+
+        # Attempt sending as voice message first
+        sent = False
+        if fmt == "ogg":
+            try:
+                buf = io.BytesIO(audio_bytes)
+                buf.name = "voice.ogg"
+                await update.message.reply_voice(voice=buf, caption=caption, parse_mode="HTML")
+                sent = True
+            except Exception as e:
+                logger.warning(f"reply_voice failed, falling back to reply_audio: {e}")
+
+        if not sent:
+            buf = io.BytesIO(audio_bytes)
+            buf.name = f"speech.{fmt}"
+            await update.message.reply_audio(
+                audio=buf,
+                caption=caption,
+                parse_mode="HTML",
+                title="Paradee Speech",
+                performer=f"Paradee TTS ({voice})"
+            )
+
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.error(f"TTS synthesis error: {e}", exc_info=True)
+        err_text = str(e)
+        if "is not installed" in err_text:
+            await safe_edit_message(
+                status_msg,
+                "⚠️ <b>Paradee TTS is not installed on this server.</b>\n\n"
+                "To enable it, install dependencies:\n"
+                "<code>pip install git+https://github.com/sahilmahendrakar/paradee soundfile</code>\n"
+                "<i>(Note: Requires Python 3.10 – 3.12)</i>",
+                parse_mode="HTML"
+            )
+        else:
+            await safe_edit_message(
+                status_msg,
+                f"❌ <b>Voice generation failed:</b> {html.escape(err_text[:200])}",
+                parse_mode="HTML"
+            )
+
 # --- Chat Message Handler ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_chat or not update.effective_user or not update.message:
@@ -1130,6 +1376,7 @@ async def post_init(application):
         BotCommand("imagine", "Generate Flux AI image"),
         BotCommand("edit", "Edit/transform replied photo with AI"),
         BotCommand("search", "Live web search & AI summary"),
+        BotCommand("speak", "Voice read-aloud via Paradee TTS"),
         BotCommand("ollama", "Inspect local Ollama models"),
         BotCommand("clear", "Reset conversation memory"),
         BotCommand("persona", "View or set custom personality"),
@@ -1202,6 +1449,8 @@ def main():
     app.add_handler(CommandHandler("imagine", imagine_cmd))
     app.add_handler(CommandHandler("edit", edit_cmd))
     app.add_handler(CommandHandler("search", search_cmd))
+    app.add_handler(CommandHandler("speak", speak_cmd))
+    app.add_handler(CommandHandler("voice", speak_cmd))
 
     # Callback Query Handler for Interactive UI Buttons
     app.add_handler(CallbackQueryHandler(handle_callback_query))

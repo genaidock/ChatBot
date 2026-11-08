@@ -45,6 +45,9 @@ fi
 
 # 4. Fetch latest bot.py and requirements
 echo ""
+echo "--- Ensuring system audio libraries ---"
+sudo apt-get update -qq && sudo apt-get install -y -qq git libsndfile1 || true
+
 echo "--- Updating code ---"
 if [ -d "$BOT_DIR/.git" ]; then
     git pull origin main || true

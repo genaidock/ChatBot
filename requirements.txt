@@ -3,4 +3,5 @@ openai>=1.0.0
 python-dotenv==1.0.1
 httpx>=0.25.0
 aiolimiter>=1.1.0
-
+git+https://github.com/sahilmahendrakar/paradee
+soundfile>=0.12.0

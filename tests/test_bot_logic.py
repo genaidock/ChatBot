@@ -153,6 +153,81 @@ class TestBotLogic(unittest.TestCase):
         self.assertIn("/imagine ", switch_inline)
         self.assertIn("/edit ", switch_inline)
         self.assertIn("/search ", switch_inline)
+        self.assertIn("/speak ", switch_inline)
+
+    def test_clean_text_for_speech(self):
+        raw = "Check [Google](https://google.com) and **bold** *italic* text with `code`.\n```python\nprint(123)\n```"
+        cleaned = bot.clean_text_for_speech(raw)
+        self.assertNotIn("https://", cleaned)
+        self.assertIn("Google", cleaned)
+        self.assertIn("bold italic", cleaned)
+        self.assertIn("[code snippet omitted]", cleaned)
+        self.assertNotIn("`", cleaned)
+
+        # Truncation test
+        long_text = "This is a sentence. " * 100
+        truncated = bot.clean_text_for_speech(long_text, max_chars=100)
+        self.assertTrue(len(truncated) <= 120)
+        self.assertIn("truncated", truncated)
+
+    def test_parse_speak_args(self):
+        # 1. Default voice
+        text, voice = bot.parse_speak_args(["Hello", "world"])
+        self.assertEqual(text, "Hello world")
+        self.assertEqual(voice, "af_heart")
+
+        # 2. First arg voice alias
+        text, voice = bot.parse_speak_args(["puck", "Hello", "world"])
+        self.assertEqual(text, "Hello world")
+        self.assertEqual(voice, "am_puck")
+
+        # 3. Flag argument
+        text, voice = bot.parse_speak_args(["--voice", "isabella", "Good", "morning"])
+        self.assertEqual(text, "Good morning")
+        self.assertEqual(voice, "bf_isabella")
+
+        text, voice = bot.parse_speak_args(["--voice=fable", "Welcome", "back"])
+        self.assertEqual(text, "Welcome back")
+        self.assertEqual(voice, "bm_fable")
+
+        # 4. Reply to text message without args
+        mock_reply = MagicMock()
+        mock_reply.text = "This is a reply to an AI response."
+        mock_reply.caption = None
+        text, voice = bot.parse_speak_args([], reply_to_message=mock_reply)
+        self.assertEqual(text, "This is a reply to an AI response.")
+        self.assertEqual(voice, "af_heart")
+
+        # 5. Reply to text message with voice arg
+        text, voice = bot.parse_speak_args(["puck"], reply_to_message=mock_reply)
+        self.assertEqual(text, "This is a reply to an AI response.")
+        self.assertEqual(voice, "am_puck")
+
+        # 6. Reply to photo caption
+        mock_reply_cap = MagicMock()
+        mock_reply_cap.text = None
+        mock_reply_cap.caption = "Photo caption text"
+        text, voice = bot.parse_speak_args([], reply_to_message=mock_reply_cap)
+        self.assertEqual(text, "Photo caption text")
+
+    async def _async_speak_cmd_help_test(self):
+        mock_update = MagicMock()
+        mock_update.effective_chat.id = 12345
+        mock_update.message.reply_to_message = None
+        mock_update.message.reply_text = AsyncMock()
+
+        mock_context = MagicMock()
+        mock_context.args = []
+
+        await bot.speak_cmd(mock_update, mock_context)
+        mock_update.message.reply_text.assert_called_once()
+        call_text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Paradee Text-to-Speech", call_text)
+        self.assertIn("/speak", call_text)
+
+    def test_speak_cmd_help_when_empty(self):
+        import asyncio
+        asyncio.run(self._async_speak_cmd_help_test())
 
     async def _async_safe_edit_test(self):
         # 1. Normal edit success
