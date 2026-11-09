@@ -1141,10 +1141,10 @@ def parse_speak_args(args: list[str] | None, reply_to_message=None) -> tuple[str
 
     return text, voice
 
-def synthesize_speech_sync(text: str, voice: str = DEFAULT_VOICE) -> tuple[bytes, str]:
+def synthesize_speech_sync(text: str, voice: str = DEFAULT_VOICE) -> tuple[bytes, str, int]:
     """
     Synchronously synthesizes speech using Paradee and soundfile.
-    Returns (audio_bytes, format_str) where format_str is 'ogg' or 'wav'.
+    Returns (audio_bytes, format_str, duration_seconds) where format_str is 'ogg' or 'mp3' or 'wav'.
     """
     try:
         import soundfile as sf
@@ -1157,17 +1157,28 @@ def synthesize_speech_sync(text: str, voice: str = DEFAULT_VOICE) -> tuple[bytes
     from paradee import SAMPLE_RATE
 
     audio = tts(text, voice=voice)
+    duration_sec = max(1, int(len(audio) / SAMPLE_RATE))
 
-    # Try writing OGG first (ideal for Telegram voice messages)
+    # 1. Try writing OGG with OPUS encoding (strictly required for Telegram voice notes)
     try:
         buf = io.BytesIO()
-        sf.write(buf, audio, SAMPLE_RATE, format="OGG")
-        return buf.getvalue(), "ogg"
-    except Exception:
-        # Fallback to standard WAV format
+        sf.write(buf, audio, SAMPLE_RATE, format="OGG", subtype="OPUS")
+        return buf.getvalue(), "ogg", duration_sec
+    except Exception as e_opus:
+        logger.debug(f"OGG OPUS encoding not available, trying MP3: {e_opus}")
+
+    # 2. Try writing MP3 (natively supported by Telegram sendVoice)
+    try:
         buf = io.BytesIO()
-        sf.write(buf, audio, SAMPLE_RATE, format="WAV")
-        return buf.getvalue(), "wav"
+        sf.write(buf, audio, SAMPLE_RATE, format="MP3")
+        return buf.getvalue(), "mp3", duration_sec
+    except Exception as e_mp3:
+        logger.debug(f"MP3 encoding not available, falling back to WAV: {e_mp3}")
+
+    # 3. Fallback to standard WAV format
+    buf = io.BytesIO()
+    sf.write(buf, audio, SAMPLE_RATE, format="WAV")
+    return buf.getvalue(), "wav", duration_sec
 
 # --- Faster-Whisper Speech-to-Text (STT) Engine ---
 _WHISPER_MODEL = None
@@ -1221,7 +1232,7 @@ async def _synthesize_and_send_voice(
         pass
 
     try:
-        audio_bytes, fmt = await asyncio.to_thread(synthesize_speech_sync, clean_speech_text, voice)
+        audio_bytes, fmt, duration_sec = await asyncio.to_thread(synthesize_speech_sync, clean_speech_text, voice)
 
         voice_labels = {
             "af_heart": "American Female",
@@ -1241,11 +1252,16 @@ async def _synthesize_and_send_voice(
         )
 
         sent = False
-        if fmt == "ogg":
+        if fmt in ("ogg", "mp3"):
             try:
                 buf = io.BytesIO(audio_bytes)
-                buf.name = "voice.ogg"
-                await update.message.reply_voice(voice=buf, caption=caption, parse_mode="HTML")
+                buf.name = f"voice.{fmt}"
+                await update.message.reply_voice(
+                    voice=buf,
+                    duration=duration_sec,
+                    caption=caption,
+                    parse_mode="HTML"
+                )
                 sent = True
             except Exception as e:
                 logger.warning(f"reply_voice failed, falling back to reply_audio: {e}")
@@ -1255,6 +1271,7 @@ async def _synthesize_and_send_voice(
             buf.name = f"speech.{fmt}"
             await update.message.reply_audio(
                 audio=buf,
+                duration=duration_sec,
                 caption=caption,
                 parse_mode="HTML",
                 title="AI Voice Response",
