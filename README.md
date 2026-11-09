@@ -16,7 +16,8 @@ A Telegram chatbot featuring multi-provider streaming fallbacks, uncensored Dolp
   3. **OpenRouter**: High-performance reasoning models
   4. **Pollinations.ai**: `openai` (100% free safety net fallback)
 - **Real-Time Streaming Responses:** Smooth streamed output with live edit throttle.
-- **Text-to-Speech (Paradee-8M):** Ultra-lightweight local CPU-driven voice synthesis (distilled from Kokoro-82M) via `/speak` or reply-to-speak.
+- **Two-Way Voice Chat:** Hold the Telegram mic button to talk directly! The bot transcribes your speech via Faster-Whisper, generates an AI response, and speaks it back with Paradee-8M.
+- **Voice AI & TTS (`/speak` & `/tts`):** Ask questions with `/speak <question>` to get spoken AI answers, or use `/tts <text>` for verbatim speech.
 - **Custom Personas:** Set any custom persona on the fly per chat (`/persona <prompt>`), or reset to default MetaBot (`/persona_reset`).
 - **AI Image Generation:** Free, high-quality Flux image generation via `/imagine <prompt>`.
 - **Group & Private Chat Support:** Works automatically in private messages; responds in groups when @mentioned, replied to, or on commands.
@@ -30,7 +31,8 @@ A Telegram chatbot featuring multi-provider streaming fallbacks, uncensored Dolp
 - `/imagine <prompt>` - Generate an image using Flux AI
 - `/edit <prompt>` - Reply to any photo to transform/edit with AI (Img2Img)
 - `/search <query>` - Live web search with AI synthesized answer
-- `/speak <text>` - Voice synthesis via Paradee 8M (or reply to any message with `/speak`)
+- `/speak <question>` - Ask AI and receive a spoken voice reply (or reply to any message to speak it)
+- `/tts <text>` - Pure verbatim text-to-speech reader
 - `/voice` - Alias for `/speak` (supports `heart`, `puck`, `isabella`, `fable`)
 - `/clear` - Reset chat context memory
 - `/persona <text>` - Set a custom personality for this chat

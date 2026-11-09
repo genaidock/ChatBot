@@ -482,7 +482,9 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /imagine &lt;prompt&gt; — Free Flux AI image generation\n"
         "• /edit &lt;prompt&gt; — Reply to any photo to edit/transform with AI\n"
         "• /search &lt;query&gt; — Real-time web search with AI summary\n"
-        "• /speak &lt;text&gt; — Voice read-aloud via Paradee TTS (or reply to any message)\n"
+        "• /speak &lt;question&gt; — Ask AI and get spoken voice reply\n"
+        "• /tts &lt;text&gt; — Pure verbatim text-to-speech reader\n"
+        "• 🎙️ <i>Tip: Hold the Telegram mic button to talk directly!</i>\n"
         "• /persona &lt;text&gt; — Set custom personality\n"
         "• /persona_reset — Reset persona to default"
     )
@@ -1167,43 +1169,51 @@ def synthesize_speech_sync(text: str, voice: str = DEFAULT_VOICE) -> tuple[bytes
         sf.write(buf, audio, SAMPLE_RATE, format="WAV")
         return buf.getvalue(), "wav"
 
-async def speak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Synthesizes speech from user text or replied message using Paradee-8M.
-    Supports voice selection: heart (default), puck, isabella, fable.
-    """
-    if not update.effective_chat or not update.message:
-        return
+# --- Faster-Whisper Speech-to-Text (STT) Engine ---
+_WHISPER_MODEL = None
+_WHISPER_LOCK = None
 
+def get_whisper_model():
+    """Lazily loads and returns the singleton Faster-Whisper STT model instance."""
+    global _WHISPER_MODEL, _WHISPER_LOCK
+    if _WHISPER_LOCK is None:
+        import threading
+        _WHISPER_LOCK = threading.Lock()
+
+    with _WHISPER_LOCK:
+        if _WHISPER_MODEL is None:
+            try:
+                from faster_whisper import WhisperModel
+            except ImportError as e:
+                raise RuntimeError(
+                    "faster-whisper is not installed. "
+                    "Install with: pip install faster-whisper 'av<18'"
+                ) from e
+            _WHISPER_MODEL = WhisperModel("tiny.en", device="cpu", compute_type="int8")
+    return _WHISPER_MODEL
+
+def transcribe_audio_sync(audio_bytes: bytes) -> str:
+    """
+    Synchronously transcribes audio bytes (.ogg, .wav, .mp3) using faster-whisper.
+    """
+    model = get_whisper_model()
+    buf = io.BytesIO(audio_bytes)
+    segments, info = model.transcribe(buf, beam_size=1)
+    text = " ".join(s.text.strip() for s in segments).strip()
+    return text
+
+async def _synthesize_and_send_voice(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    clean_speech_text: str,
+    voice: str = DEFAULT_VOICE,
+    original_prompt: str = None,
+    full_answer: str = None,
+    status_msg = None
+):
+    """Shared helper to synthesize speech and send voice message with caption."""
     chat_id = update.effective_chat.id
-    reply_to = update.message.reply_to_message
 
-    raw_text, voice = parse_speak_args(context.args, reply_to)
-    clean_text = clean_text_for_speech(raw_text)
-
-    if not clean_text:
-        help_msg = (
-            "🎙️ <b>Paradee Text-to-Speech (8M)</b>\n\n"
-            "💬 <b>How to Use:</b>\n"
-            "• <code>/speak &lt;text&gt;</code> — Synthesize and speak text\n"
-            "• Reply to <i>any message</i> with <code>/speak</code> to read it aloud!\n\n"
-            "🗣️ <b>Available Voices:</b>\n"
-            "• <code>heart</code> (af_heart) — American Female (Default)\n"
-            "• <code>puck</code> (am_puck) — American Male\n"
-            "• <code>isabella</code> (bf_isabella) — British Female\n"
-            "• <code>fable</code> (bm_fable) — British Male\n\n"
-            "💡 <b>Examples:</b>\n"
-            "• <code>/speak Hello from Paradee!</code>\n"
-            "• <code>/speak puck Welcome back!</code>\n"
-            "• <code>/speak --voice isabella Good morning.</code>\n"
-            "• Reply to any message with <code>/speak fable</code>"
-        )
-        await update.message.reply_text(help_msg, parse_mode="HTML")
-        return
-
-    status_msg = await update.message.reply_text("🎙️ <i>Synthesizing voice audio with Paradee AI...</i>", parse_mode="HTML")
-
-    # Send recording voice action
     try:
         action = getattr(constants.ChatAction, "RECORD_VOICE", constants.ChatAction.TYPING)
         await context.bot.send_chat_action(chat_id=chat_id, action=action)
@@ -1211,7 +1221,7 @@ async def speak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     try:
-        audio_bytes, fmt = await asyncio.to_thread(synthesize_speech_sync, clean_text, voice)
+        audio_bytes, fmt = await asyncio.to_thread(synthesize_speech_sync, clean_speech_text, voice)
 
         voice_labels = {
             "af_heart": "American Female",
@@ -1221,10 +1231,15 @@ async def speak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         voice_label = voice_labels.get(voice, voice)
 
-        snippet = (clean_text[:120] + "...") if len(clean_text) > 120 else clean_text
-        caption = f"🗣️ <i>{html.escape(snippet)}</i>\n\n🎙️ <b>Voice:</b> {voice_label} | <b>Model:</b> Paradee-8M"
+        snippet = (full_answer or clean_speech_text)
+        snippet = (snippet[:120] + "...") if len(snippet) > 120 else snippet
 
-        # Attempt sending as voice message first
+        heard_line = f"\n🎧 <b>Heard:</b> \"<i>{html.escape(original_prompt[:80])}</i>\"" if original_prompt else ""
+        caption = (
+            f"🗣️ <i>{html.escape(snippet)}</i>\n\n"
+            f"🎙️ <b>Voice:</b> {voice_label} | <b>Model:</b> Paradee-8M{heard_line}"
+        )
+
         sent = False
         if fmt == "ogg":
             try:
@@ -1242,33 +1257,262 @@ async def speak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 audio=buf,
                 caption=caption,
                 parse_mode="HTML",
-                title="Paradee Speech",
+                title="AI Voice Response",
                 performer=f"Paradee TTS ({voice})"
             )
 
-        try:
-            await status_msg.delete()
-        except Exception:
-            pass
+        if status_msg:
+            # If the response was long, leave formatted text for reading
+            if full_answer and len(full_answer) > 280:
+                header = f"🎧 <b>Question:</b> \"<i>{html.escape(original_prompt)}</i>\"\n\n" if original_prompt else ""
+                await safe_edit_message(status_msg, f"{header}🤖 <b>MetaBot:</b>\n{full_answer}", parse_mode="Markdown")
+            else:
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
 
     except Exception as e:
         logger.error(f"TTS synthesis error: {e}", exc_info=True)
         err_text = str(e)
-        if "is not installed" in err_text:
+        if status_msg:
+            if "is not installed" in err_text:
+                await safe_edit_message(
+                    status_msg,
+                    "⚠️ <b>Paradee TTS is not installed on this server.</b>\n\n"
+                    "Install with:\n"
+                    "<code>pip install git+https://github.com/sahilmahendrakar/paradee soundfile</code>",
+                    parse_mode="HTML"
+                )
+            else:
+                await safe_edit_message(
+                    status_msg,
+                    f"❌ <b>Voice generation error:</b> {html.escape(err_text[:200])}",
+                    parse_mode="HTML"
+                )
+        else:
+            await update.message.reply_text(f"❌ Voice generation error: {e}")
+
+async def tts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Pure verbatim Text-to-Speech reader:
+    Reads aloud the provided text or replied-to message.
+    """
+    if not update.effective_chat or not update.message:
+        return
+
+    reply_to = update.message.reply_to_message
+    raw_text, voice = parse_speak_args(context.args, reply_to)
+    clean_text = clean_text_for_speech(raw_text)
+
+    if not clean_text:
+        await update.message.reply_text(
+            "Use: <code>/tts &lt;text to speak aloud&gt;</code>\n"
+            "Or reply to any message with <code>/tts</code> to read it verbatim.",
+            parse_mode="HTML"
+        )
+        return
+
+    status_msg = await update.message.reply_text("🎙️ <i>Synthesizing speech...</i>", parse_mode="HTML")
+    await _synthesize_and_send_voice(update, context, clean_text, voice, status_msg=status_msg)
+
+async def speak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    AI Voice Chat:
+    - If replying to a message: reads that message aloud (TTS).
+    - If text question provided: asks AI and speaks the AI's intelligent answer!
+    """
+    if not update.effective_chat or not update.message:
+        return
+
+    chat_id = update.effective_chat.id
+    reply_to = update.message.reply_to_message
+
+    raw_text, voice = parse_speak_args(context.args, reply_to)
+
+    if not raw_text:
+        help_msg = (
+            "🎙️ <b>AI Voice Chat & Speech (Paradee-8M)</b>\n\n"
+            "💬 <b>Two-Way Voice Chat:</b>\n"
+            "• <b>Hold Telegram Mic:</b> Speak any question and the bot will answer with voice!\n\n"
+            "🗣️ <b>Commands:</b>\n"
+            "• <code>/speak &lt;question&gt;</code> — Ask AI and get spoken voice reply\n"
+            "• Reply to <i>any message</i> with <code>/speak</code> to read it aloud\n"
+            "• <code>/tts &lt;text&gt;</code> — Pure verbatim text-to-speech\n\n"
+            "🎭 <b>Voices:</b> <code>heart</code> (default), <code>puck</code>, <code>isabella</code>, <code>fable</code>\n\n"
+            "💡 <b>Examples:</b>\n"
+            "• <code>/speak which model you are?</code>\n"
+            "• <code>/speak puck tell me a joke</code>"
+        )
+        await update.message.reply_text(help_msg, parse_mode="HTML")
+        return
+
+    # If user replied to a message without extra prompt text, read that message aloud
+    if reply_to and not context.args:
+        clean_text = clean_text_for_speech(raw_text)
+        status_msg = await update.message.reply_text("🎙️ <i>Reading message aloud...</i>", parse_mode="HTML")
+        await _synthesize_and_send_voice(update, context, clean_text, voice, status_msg=status_msg)
+        return
+
+    # User asked a question in text! Ask the AI and speak the AI's answer:
+    status_msg = await update.message.reply_text(f"💭 <i>Thinking & speaking:</i> \"<b>{html.escape(raw_text[:80])}</b>\"...", parse_mode="HTML")
+
+    history = get_chat_history(chat_id, context)[-10:]
+    system_msg = {"role": "system", "content": get_persona(chat_id, context)}
+    messages = [system_msg] + history + [{"role": "user", "content": raw_text}]
+
+    providers = build_providers_for_chat(chat_id, context)
+    if not providers:
+        await safe_edit_message(status_msg, "No AI providers configured.")
+        return
+
+    ai_result = None
+    stop_typing_event = asyncio.Event()
+    typing_task = asyncio.create_task(typing_worker(chat_id, context.bot, stop_typing_event))
+
+    try:
+        for provider in providers:
+            result, err = await stream_provider(provider, messages, status_msg, stop_typing_event)
+            if result:
+                ai_result = result
+                break
+
+        if not ai_result:
+            await safe_edit_message(status_msg, "⚠️ AI models busy. Please try again.")
+            return
+
+        # Update chat history
+        history.append({"role": "user", "content": raw_text})
+        history.append({"role": "assistant", "content": ai_result})
+        set_chat_history(chat_id, history, context)
+
+    finally:
+        stop_typing_event.set()
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
+
+    # Synthesize AI answer
+    clean_speech_text = clean_text_for_speech(ai_result, max_chars=800)
+    await _synthesize_and_send_voice(
+        update, context, clean_speech_text, voice,
+        original_prompt=raw_text, full_answer=ai_result, status_msg=status_msg
+    )
+
+async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Two-Way Voice Chat:
+    1. Downloads incoming Telegram voice note / audio message
+    2. Transcribes with Faster-Whisper (STT)
+    3. Runs transcribed question through AI provider cascade
+    4. Speaks AI response back as a native voice message using Paradee-8M (TTS)
+    """
+    if not update.effective_chat or not update.effective_user or not update.message:
+        return
+    if not should_respond_in_group(update, context):
+        return
+
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    if time.time() - COOLDOWN.get(user_id, 0) < 1.5:
+        return
+    COOLDOWN[user_id] = time.time()
+
+    voice_or_audio = update.message.voice or update.message.audio
+    if not voice_or_audio:
+        return
+
+    status_msg = await update.message.reply_text("🎧 <i>Listening to voice message...</i>", parse_mode="HTML")
+
+    try:
+        file_obj = await context.bot.get_file(voice_or_audio.file_id)
+        buf = io.BytesIO()
+        await file_obj.download_to_memory(buf)
+        audio_bytes = buf.getvalue()
+    except Exception as e:
+        logger.error(f"Failed to download voice note: {e}")
+        await safe_edit_message(status_msg, f"❌ Failed to download audio: {e}")
+        return
+
+    # Transcribe speech
+    try:
+        transcribed_text = await asyncio.to_thread(transcribe_audio_sync, audio_bytes)
+    except Exception as e:
+        logger.error(f"Speech transcription error: {e}", exc_info=True)
+        err_str = str(e)
+        if "faster-whisper is not installed" in err_str:
             await safe_edit_message(
                 status_msg,
-                "⚠️ <b>Paradee TTS is not installed on this server.</b>\n\n"
-                "To enable it, install dependencies:\n"
-                "<code>pip install git+https://github.com/sahilmahendrakar/paradee soundfile</code>\n"
-                "<i>(Note: Requires Python 3.10 – 3.12)</i>",
+                "⚠️ <b>Voice recognition is not installed on this server.</b>\n"
+                "To enable it, run:\n"
+                "<code>pip install faster-whisper \"av&lt;18\"</code>",
                 parse_mode="HTML"
             )
         else:
-            await safe_edit_message(
-                status_msg,
-                f"❌ <b>Voice generation failed:</b> {html.escape(err_text[:200])}",
-                parse_mode="HTML"
-            )
+            await safe_edit_message(status_msg, f"❌ Voice transcription error: {e}")
+        return
+
+    if not transcribed_text:
+        await safe_edit_message(
+            status_msg,
+            "⚠️ <i>Could not hear any speech in the audio. Please speak clearly and try again.</i>",
+            parse_mode="HTML"
+        )
+        return
+
+    # Update status to show what was heard and indicate AI is thinking
+    await safe_edit_message(
+        status_msg,
+        f"🎧 <i>Heard:</i> \"<b>{html.escape(transcribed_text)}</b>\"\n💭 <i>Thinking...</i>",
+        parse_mode="HTML"
+    )
+
+    history = get_chat_history(chat_id, context)[-10:]
+    system_msg = {"role": "system", "content": get_persona(chat_id, context)}
+    messages = [system_msg] + history + [{"role": "user", "content": transcribed_text}]
+
+    providers = build_providers_for_chat(chat_id, context)
+    if not providers:
+        await safe_edit_message(status_msg, "No AI providers configured.")
+        return
+
+    ai_result = None
+    stop_typing_event = asyncio.Event()
+    typing_task = asyncio.create_task(typing_worker(chat_id, context.bot, stop_typing_event))
+
+    try:
+        for provider in providers:
+            result, err = await stream_provider(provider, messages, status_msg, stop_typing_event)
+            if result:
+                ai_result = result
+                break
+
+        if not ai_result:
+            await safe_edit_message(status_msg, "⚠️ All AI models busy. Please try again.")
+            return
+
+        # Update chat history
+        history.append({"role": "user", "content": transcribed_text})
+        history.append({"role": "assistant", "content": ai_result})
+        set_chat_history(chat_id, history, context)
+
+    finally:
+        stop_typing_event.set()
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
+
+    # Synthesize AI answer and send voice reply
+    clean_speech_text = clean_text_for_speech(ai_result, max_chars=800)
+    await _synthesize_and_send_voice(
+        update, context, clean_speech_text, DEFAULT_VOICE,
+        original_prompt=transcribed_text, full_answer=ai_result, status_msg=status_msg
+    )
 
 # --- Chat Message Handler ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1376,7 +1620,8 @@ async def post_init(application):
         BotCommand("imagine", "Generate Flux AI image"),
         BotCommand("edit", "Edit/transform replied photo with AI"),
         BotCommand("search", "Live web search & AI summary"),
-        BotCommand("speak", "Voice read-aloud via Paradee TTS"),
+        BotCommand("speak", "Ask AI and get spoken voice reply"),
+        BotCommand("tts", "Pure verbatim text-to-speech reader"),
         BotCommand("ollama", "Inspect local Ollama models"),
         BotCommand("clear", "Reset conversation memory"),
         BotCommand("persona", "View or set custom personality"),
@@ -1451,6 +1696,10 @@ def main():
     app.add_handler(CommandHandler("search", search_cmd))
     app.add_handler(CommandHandler("speak", speak_cmd))
     app.add_handler(CommandHandler("voice", speak_cmd))
+    app.add_handler(CommandHandler("tts", tts_cmd))
+
+    # Two-Way Voice Note Handler (Telegram mic voice messages & audio files)
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
 
     # Callback Query Handler for Interactive UI Buttons
     app.add_handler(CallbackQueryHandler(handle_callback_query))

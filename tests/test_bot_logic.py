@@ -222,12 +222,27 @@ class TestBotLogic(unittest.TestCase):
         await bot.speak_cmd(mock_update, mock_context)
         mock_update.message.reply_text.assert_called_once()
         call_text = mock_update.message.reply_text.call_args[0][0]
-        self.assertIn("Paradee Text-to-Speech", call_text)
+        self.assertIn("Paradee", call_text)
         self.assertIn("/speak", call_text)
+
+    async def _async_tts_cmd_help_test(self):
+        mock_update = MagicMock()
+        mock_update.effective_chat.id = 12345
+        mock_update.message.reply_to_message = None
+        mock_update.message.reply_text = AsyncMock()
+
+        mock_context = MagicMock()
+        mock_context.args = []
+
+        await bot.tts_cmd(mock_update, mock_context)
+        mock_update.message.reply_text.assert_called_once()
+        call_text = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("/tts", call_text)
 
     def test_speak_cmd_help_when_empty(self):
         import asyncio
         asyncio.run(self._async_speak_cmd_help_test())
+        asyncio.run(self._async_tts_cmd_help_test())
 
     async def _async_safe_edit_test(self):
         # 1. Normal edit success
